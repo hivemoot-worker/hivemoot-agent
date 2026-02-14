@@ -194,7 +194,49 @@ See [hivemoot-bot docs](https://github.com/hivemoot/hivemoot-bot/blob/main/READM
 
 ## Optional Override Services
 
-To target multiple repos from one setup, create `docker-compose.override.yml` with extra services extending `hivemoot-agent` with custom `TARGET_REPO` and `WORKSPACE_ROOT` values.
+For multi-repo runs with stronger isolation, prefer one service per target
+repo (one container per repo).
+
+1. Copy the provided example:
+
+```bash
+cp docker-compose.override.example.yml docker-compose.override.yml
+```
+
+2. Set a unique `TARGET_REPO` and `WORKSPACE_ROOT` per service.
+3. Start only the services you want to run:
+
+```bash
+docker compose up -d hivemoot-agent-repo-a hivemoot-agent-repo-b
+```
+
+Before launching, validate that each service has a unique workspace root:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.override.yml config --format json \
+  | jq -r '.services | to_entries[] | [.key, (.value.environment.WORKSPACE_ROOT // "/workspace/repo")] | @tsv' \
+  | awk '{
+      count[$2]++
+      services[$2]=services[$2] " " $1
+    }
+    END {
+      bad=0
+      for (root in count) {
+        if (count[root] > 1) {
+          printf "duplicate WORKSPACE_ROOT %s used by:%s\n", root, services[root]
+          bad=1
+        }
+      }
+      exit bad
+    }'
+```
+
+Tradeoff guidance:
+- Use override services for production or security-sensitive workloads.
+  This keeps repo state, process lifecycle, and failure domains isolated by
+  container.
+- A single container strategy (one process targeting many repos) can reduce
+  resource usage, but isolation is weaker and blast radius is larger.
 
 ## Security Notes
 

@@ -1,0 +1,28 @@
+# Example override for running multiple target repos with strong isolation.
+# Usage:
+#   cp docker-compose.override.example.yml docker-compose.override.yml
+#   edit TARGET_REPO + WORKSPACE_ROOT values
+#   docker compose up -d hivemoot-agent-repo-a hivemoot-agent-repo-b
+
+services:
+  hivemoot-agent-repo-a:
+    extends:
+      service: hivemoot-agent
+    environment:
+      TARGET_REPO: your-org/repo-a
+      WORKSPACE_ROOT: /workspace/repo-a
+
+  hivemoot-agent-repo-b:
+    extends:
+      service: hivemoot-agent
+    environment:
+      TARGET_REPO: your-org/repo-b
+      WORKSPACE_ROOT: /workspace/repo-b
+
+  # Optional third repo.
+  # hivemoot-agent-repo-c:
+  #   extends:
+  #     service: hivemoot-agent
+  #   environment:
+  #     TARGET_REPO: your-org/repo-c
+  #     WORKSPACE_ROOT: /workspace/repo-c
