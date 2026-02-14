@@ -84,6 +84,8 @@ jobs:
           ignore-unfixed: true
       - name: Generate Trivy JSON report
         uses: aquasecurity/trivy-action@0.33.1
+        env:
+          TRIVY_IGNOREFILE: ""
         with:
           image-ref: hivemoot-agent:ci
           format: json
