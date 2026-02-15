@@ -83,9 +83,9 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
       - name: Generate Trivy JSON report
+        run: : > .trivyignore.empty
+      - name: Generate Trivy JSON report
         uses: aquasecurity/trivy-action@0.33.1
-        env:
-          TRIVY_IGNOREFILE: ""
         with:
           image-ref: hivemoot-agent:ci
           format: json
@@ -93,5 +93,6 @@ jobs:
           exit-code: "0"
           severity: CRITICAL,HIGH
           ignore-unfixed: true
+          trivyignores: .trivyignore.empty
       - name: Check for stale Trivy suppressions
         run: scripts/check-trivyignore.sh .trivyignore trivy-report.json
