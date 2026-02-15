@@ -46,7 +46,11 @@ RUN npm install -g \
 
 # Anthropic deprecated npm installation for Claude Code. Use the native
 # installer so runtime behavior stays aligned with upstream support.
-RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
+# Run from a small temp directory to avoid installer OOM on large working trees.
+RUN mkdir -p /tmp/claude-install \
+  && cd /tmp/claude-install \
+  && curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
+  && rm -rf /tmp/claude-install \
   && mkdir -p /home/node/.codex /home/node/.gemini /home/node/.claude /home/node/.config/claude
 
 USER root
