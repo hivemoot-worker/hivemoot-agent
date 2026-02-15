@@ -37,6 +37,8 @@ workspace_root="${WORKSPACE_ROOT:-/workspace}"
 email_domain="${AGENT_GIT_EMAIL_DOMAIN:-agents.local}"
 global_extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 target_repo="${TARGET_REPO:-}"
+provider="${AGENT_PROVIDER:-claude}"
+auth_mode="${AGENT_AUTH_MODE:-auto}"
 max_agents=10
 token_tmp_root="/tmp/hivemoot-agent-token-files"
 lock_dir="/tmp/agent-locks"
@@ -49,6 +51,22 @@ max_failures="${MAX_CONSECUTIVE_FAILURES:-5}"
 # Mention watching (opt-in)
 watch_mentions="${WATCH_MENTIONS:-}"
 watch_poll_interval="${WATCH_POLL_INTERVAL:-300}"
+
+case "$auth_mode" in
+  auto|api_key|subscription) ;;
+  *)
+    echo "Unsupported AGENT_AUTH_MODE: ${auth_mode}. Use auto|api_key|subscription." >&2
+    exit 1
+    ;;
+esac
+
+case "$provider" in
+  codex|gemini|claude) ;;
+  *)
+    echo "Unsupported AGENT_PROVIDER: ${provider}. Use codex|gemini|claude." >&2
+    exit 1
+    ;;
+esac
 
 # Validate numeric settings
 for var_name in periodic_interval periodic_jitter max_failures; do
@@ -184,8 +202,6 @@ preflight_check() {
 
   log "Pre-flight: validating configuration"
 
-  local provider="${AGENT_PROVIDER:-claude}"
-  local auth_mode="${AGENT_AUTH_MODE:-auto}"
   local prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/default.md}"
 
   if ! command -v "$provider" >/dev/null 2>&1; then
