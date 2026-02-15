@@ -108,6 +108,26 @@ AGENT_GITHUB_TOKEN_02=...
 
 Each slot requires both `AGENT_ID_XX` and `AGENT_GITHUB_TOKEN_XX` (or `_FILE`). Duplicate agent IDs are rejected.
 
+## Job Isolation
+
+Standalone runs automatically get isolated state via `JOB_ID`
+(auto-generated as `YYYYMMDD-HHMMSS-<pid>`):
+
+- Separate workspace, HOME, and logs per job
+- Selective auth credential seeding (no conversation cache bleed)
+- Automatic cleanup on exit
+
+Override for external correlation:
+
+```bash
+JOB_ID=ci-build-123 docker compose run --rm hivemoot-agent
+```
+
+Useful for tracking runs in CI pipelines or multi-job orchestration.
+
+Managed mode note: `run-multi.sh` and `run-loop.sh` isolate by agent ID
+(`REPO_DIR`/`LOG_DIR`) and ignore `JOB_ID`.
+
 ## Run Modes
 
 **One-shot** (default) — run all agents once, then exit:
