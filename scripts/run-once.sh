@@ -242,7 +242,9 @@ ${user_message}"
 
 clone_repo() {
   local askpass
+  local credentials_file
   askpass="$(mktemp)"
+  credentials_file="${repo_dir}/.git/hivemoot-credentials"
   cat > "$askpass" <<'EOF'
 #!/usr/bin/env sh
 case "$1" in
@@ -275,6 +277,11 @@ EOF
 
   git -C "$repo_dir" config user.name "$agent_name"
   git -C "$repo_dir" config user.email "$agent_email"
+  git -C "$repo_dir" config credential.helper "store --file=${credentials_file}"
+  git -C "$repo_dir" config credential.useHttpPath true
+  printf 'protocol=https\nhost=github.com\npath=%s.git\nusername=x-access-token\npassword=%s\n\n' \
+    "$target_repo" "$github_token" | git -C "$repo_dir" credential approve
+  chmod 600 "$credentials_file" 2>/dev/null || true
 }
 
 clone_repo
