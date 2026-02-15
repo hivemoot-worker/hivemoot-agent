@@ -42,8 +42,11 @@ RUN npm install -g \
   "@openai/codex@${CODEX_VERSION}" \
   "@google/gemini-cli@${GEMINI_VERSION}" \
   "@hivemoot-dev/cli@${HIVEMOOT_CLI_VERSION}" \
-  && curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
-  && npm cache clean --force \
+  && npm cache clean --force
+
+# Anthropic deprecated npm installation for Claude Code. Use the native
+# installer so runtime behavior stays aligned with upstream support.
+RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
   && mkdir -p /home/node/.codex /home/node/.gemini /home/node/.claude /home/node/.config/claude
 
 USER root
