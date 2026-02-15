@@ -33,7 +33,7 @@ RUN mkdir -p /usr/local/share/npm-global \
   && chown -R node:node /usr/local/share/npm-global
 
 ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
-ENV PATH=/usr/local/share/npm-global/bin:${PATH}
+ENV PATH=/home/node/.local/bin:/usr/local/share/npm-global/bin:${PATH}
 ENV HOME=/home/node
 
 USER node
@@ -41,8 +41,8 @@ USER node
 RUN npm install -g \
   "@openai/codex@${CODEX_VERSION}" \
   "@google/gemini-cli@${GEMINI_VERSION}" \
-  "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
   "@hivemoot-dev/cli@${HIVEMOOT_CLI_VERSION}" \
+  && curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
   && npm cache clean --force \
   && mkdir -p /home/node/.codex /home/node/.gemini /home/node/.claude /home/node/.config/claude
 
@@ -53,7 +53,7 @@ USER root
 # so codex/gemini/claude/hivemoot stay discoverable.
 RUN ln -sf /usr/local/share/npm-global/bin/codex /usr/local/bin/codex \
   && ln -sf /usr/local/share/npm-global/bin/gemini /usr/local/bin/gemini \
-  && ln -sf /usr/local/share/npm-global/bin/claude /usr/local/bin/claude \
+  && ln -sf /home/node/.local/bin/claude /usr/local/bin/claude \
   && ln -sf /usr/local/share/npm-global/bin/hivemoot /usr/local/bin/hivemoot
 
 USER node
