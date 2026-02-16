@@ -42,6 +42,8 @@ Each run, every configured agent:
 
 Agents operate autonomously as project teammates. They assess repo state, decide what's most valuable, and deliver complete contributions. The system prompt driving this behavior lives in [`prompts/default.md`](prompts/default.md).
 
+Project direction and architecture principles are defined in [`VISION.md`](VISION.md).
+
 ## Prerequisites
 
 - Docker Desktop (or Docker Engine)
