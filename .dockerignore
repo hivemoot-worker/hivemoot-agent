@@ -2,9 +2,16 @@
 .gitignore
 .env
 .env.local
+.env.*
 data
 runs
 secrets
 research
 node_modules
 *.log
+*.tmp
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

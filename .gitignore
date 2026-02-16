@@ -7,3 +7,9 @@ data/
 runs/
 secrets/
 *.log
+*.tmp
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
