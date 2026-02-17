@@ -22,15 +22,38 @@ fi
 
 entries=""
 pending_expiry=""
+invalid_metadata=0
+line_no=0
 while IFS= read -r raw_line || [ -n "$raw_line" ]; do
+  line_no=$((line_no + 1))
   line="${raw_line%$'\r'}"
   if [[ -z "${line//[[:space:]]/}" ]]; then
     continue
   fi
 
   if [[ "$line" =~ ^[[:space:]]*# ]]; then
-    if [[ "$line" =~ exp:([0-9]{4}-[0-9]{2}-[0-9]{2}) ]]; then
-      pending_expiry="${BASH_REMATCH[1]}"
+    if [[ "$line" == *"exp:"* ]]; then
+      if [[ "$line" =~ exp:([^[:space:]]+) ]]; then
+        expiry_token="${BASH_REMATCH[1]}"
+        if [[ ! "$expiry_token" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+          echo "Invalid expiry format in $ignore_file:$line_no: expected exp:YYYY-MM-DD" >&2
+          invalid_metadata=1
+          pending_expiry=""
+          continue
+        fi
+        normalized_expiry="$(date -u -d "$expiry_token" +%Y-%m-%d 2>/dev/null || true)"
+        if [[ "$normalized_expiry" != "$expiry_token" ]]; then
+          echo "Invalid expiry date in $ignore_file:$line_no: $expiry_token" >&2
+          invalid_metadata=1
+          pending_expiry=""
+          continue
+        fi
+        pending_expiry="$expiry_token"
+      else
+        echo "Invalid expiry metadata in $ignore_file:$line_no: expected exp:YYYY-MM-DD" >&2
+        invalid_metadata=1
+        pending_expiry=""
+      fi
     fi
     continue
   fi
@@ -44,6 +67,10 @@ done < "$ignore_file"
 entries="${entries%$'\n'}"
 
 ignored_cves="$(printf '%s\n' "$entries" | cut -f1 | grep -E '^CVE-[0-9]{4}-[0-9]+$' | sort -u || true)"
+
+if [ "$invalid_metadata" -ne 0 ]; then
+  exit 1
+fi
 
 if [ -z "$ignored_cves" ]; then
   echo "No CVEs listed in $ignore_file"
