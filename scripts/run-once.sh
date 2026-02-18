@@ -84,36 +84,25 @@ for cmd in "${required_cmds[@]}"; do
   fi
 done
 
-load_secret_from_file() {
-  local var_name="$1"
-  local file_var_name="${var_name}_FILE"
-  local var_value="${!var_name:-}"
-  local file_value="${!file_var_name:-}"
-
-  if [ -n "$var_value" ] || [ -z "$file_value" ]; then
-    return 0
-  fi
-
-  if [ ! -f "$file_value" ]; then
-    echo "${file_var_name} is set but file does not exist: ${file_value}" >&2
-    exit 1
-  fi
-
-  var_value="$(tr -d '\r\n' < "$file_value")"
-  printf -v "$var_name" '%s' "$var_value"
-  # shellcheck disable=SC2163  # dynamic export of the variable named in $var_name
-  export "$var_name"
-}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=scripts/lib.sh
+. "${SCRIPT_DIR}/lib.sh"
 
 for secret_var in \
   AGENT_GITHUB_TOKEN \
   OPENAI_API_KEY \
   GOOGLE_API_KEY \
   GEMINI_API_KEY \
-  ANTHROPIC_API_KEY
+  ANTHROPIC_API_KEY \
+  OPENROUTER_API_KEY \
+  KILOCODE_TOKEN \
+  ZAI_API_KEY
 do
   load_secret_from_file "$secret_var"
 done
+
+# shellcheck source=scripts/opencode-helpers.sh
+. "${SCRIPT_DIR}/opencode-helpers.sh"
 
 provider="${AGENT_PROVIDER:-claude}"
 auth_mode="${AGENT_AUTH_MODE:-auto}"
@@ -124,6 +113,7 @@ fresh_clone="${FRESH_CLONE:-1}"
 prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/default.md}"
 extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 agent_model="${AGENT_MODEL:-}"
+agent_tool_options_json="${AGENT_TOOL_OPTIONS_JSON:-{}}"
 timeout_secs="${AGENT_TIMEOUT_SECONDS:-1800}"
 agent_git_name="${AGENT_GIT_NAME:-}"
 agent_git_email="${AGENT_GIT_EMAIL:-}"
@@ -160,14 +150,7 @@ case "$auth_mode" in
     ;;
 esac
 
-if [ -z "$target_repo" ]; then
-  echo "TARGET_REPO is required. Set it as owner/repo." >&2
-  exit 1
-fi
-if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
-  echo "Invalid TARGET_REPO: ${target_repo}. Expected owner/repo." >&2
-  exit 1
-fi
+validate_target_repo "$target_repo"
 
 github_token="${AGENT_GITHUB_TOKEN:-${GITHUB_TOKEN:-${GH_TOKEN:-}}}"
 if [ -z "$github_token" ]; then
@@ -259,6 +242,25 @@ if [ -n "$job_home" ]; then
       fi
     done
   fi
+
+  # Kilo: seed config (provider auth, permissions) from ~/.config/kilo/
+  if [ -d "${HOME}/.config/kilo" ]; then
+    mkdir -p "$job_home/.config/kilo"
+    cp -R "${HOME}/.config/kilo"/. "$job_home/.config/kilo"/
+  fi
+
+  # OpenCode: seed config from ~/.config/opencode/
+  if [ -d "${HOME}/.config/opencode" ]; then
+    mkdir -p "$job_home/.config/opencode"
+    cp -R "${HOME}/.config/opencode"/. "$job_home/.config/opencode"/
+  fi
+  if [ -f "${HOME}/.local/share/opencode/auth.json" ]; then
+    mkdir -p "$job_home/.local/share/opencode"
+    cp "${HOME}/.local/share/opencode/auth.json" "$job_home/.local/share/opencode/auth.json"
+  fi
+
+  # OpenCode: auto-generate config and auth.json if missing
+  generate_opencode_config "$job_home"
 
   # Carry forward .profile so agent subprocesses find npm binaries
   if [ -f "${HOME}/.profile" ]; then
@@ -410,9 +412,43 @@ case "$provider" in
       fi
     fi
 
+    codex_reasoning_effort=""
+    if [ "$agent_tool_options_json" != "{}" ]; then
+      if ! command -v jq >/dev/null 2>&1; then
+        echo "AGENT_TOOL_OPTIONS_JSON is set but jq is not installed." >&2
+        exit 1
+      fi
+      jq_parse_stderr_file="$(mktemp)"
+      if ! codex_reasoning_effort="$(printf '%s' "$agent_tool_options_json" | jq -r '.model_reasoning_effort // empty' 2>"$jq_parse_stderr_file")"; then
+        jq_parse_error="$(tr '\n' ' ' <"$jq_parse_stderr_file" | sed -e 's/[[:space:]]\+/ /g' -e 's/^ //' -e 's/ $//')"
+        rm -f "$jq_parse_stderr_file"
+        if [ -n "$jq_parse_error" ]; then
+          echo "Invalid AGENT_TOOL_OPTIONS_JSON: ${jq_parse_error}" >&2
+        else
+          echo "Invalid AGENT_TOOL_OPTIONS_JSON: failed to parse JSON payload." >&2
+        fi
+        exit 1
+      fi
+      rm -f "$jq_parse_stderr_file"
+      case "$codex_reasoning_effort" in
+        ""|low|medium|high|xhigh) ;;
+        extra_high|extra-high)
+          codex_reasoning_effort="xhigh"
+          ;;
+        *)
+          echo "Invalid codex model_reasoning_effort: ${codex_reasoning_effort} (expected low|medium|high|xhigh)." >&2
+          exit 1
+          ;;
+      esac
+    fi
+
     cmd=(codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd "$repo_dir" --json)
     if [ -n "$agent_model" ]; then
       cmd+=(--model "$agent_model")
+    fi
+    if [ -n "$codex_reasoning_effort" ]; then
+      cmd+=(--config "model_reasoning_effort=\"${codex_reasoning_effort}\"")
+      log "Codex reasoning effort: ${codex_reasoning_effort}"
     fi
     cmd+=("$prompt")
     ;;
@@ -488,8 +524,98 @@ case "$provider" in
     run_in_repo=1
     ;;
 
+  kilo)
+    if ! command -v kilo >/dev/null 2>&1; then
+      echo "kilo CLI is not installed in the container." >&2
+      exit 1
+    fi
+    kilo_provider="${KILO_PROVIDER:-}"
+    kilocode_token="${KILOCODE_TOKEN:-}"
+
+    # Validate auth: KILOCODE_TOKEN (gateway) or KILO_PROVIDER + matching API key (BYOK).
+    if [ -z "$kilocode_token" ]; then
+      if [ -z "$kilo_provider" ]; then
+        echo "KILO_PROVIDER is required when AGENT_PROVIDER=kilo (unless KILOCODE_TOKEN is set for gateway mode)." >&2
+        exit 1
+      fi
+      case "$kilo_provider" in
+        anthropic)
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "ANTHROPIC_API_KEY is required when KILO_PROVIDER=anthropic." >&2
+            exit 1
+          fi
+          ;;
+        openai)
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "OPENAI_API_KEY is required when KILO_PROVIDER=openai." >&2
+            exit 1
+          fi
+          ;;
+        google)
+          if [ -z "${GOOGLE_API_KEY:-}" ] && [ -z "${GEMINI_API_KEY:-}" ]; then
+            echo "GOOGLE_API_KEY (or GEMINI_API_KEY) is required when KILO_PROVIDER=google." >&2
+            exit 1
+          fi
+          ;;
+        openrouter)
+          if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+            echo "OPENROUTER_API_KEY is required when KILO_PROVIDER=openrouter." >&2
+            exit 1
+          fi
+          ;;
+      esac
+      log "Kilo BYOK mode: provider=${kilo_provider}"
+    else
+      log "Kilo gateway mode (KILOCODE_TOKEN set)"
+    fi
+
+    cmd=(kilo run --auto)
+    kilo_model="${KILO_MODEL:-}"
+    if [ -n "$kilo_model" ]; then
+      cmd+=(-m "$kilo_model")
+      log "Kilo model override: ${kilo_model}"
+    fi
+    cmd+=("$prompt")
+    run_in_repo=1
+    ;;
+
+  opencode)
+    if ! command -v opencode >/dev/null 2>&1; then
+      echo "opencode CLI is not installed in the container." >&2
+      exit 1
+    fi
+    opencode_provider="${OPENCODE_PROVIDER:-}"
+
+    # Validate auth: BYOK with provider API key or interactive auth
+    if [ -n "$opencode_provider" ]; then
+      case "$opencode_provider" in
+        zai)
+          if [ -z "${ZAI_API_KEY:-}" ]; then
+            echo "ZAI_API_KEY is required when OPENCODE_PROVIDER=zai." >&2
+            exit 1
+          fi
+          ;;
+      esac
+      log "OpenCode BYOK mode: provider=${opencode_provider}"
+    elif [ -f "${HOME}/.local/share/opencode/auth.json" ]; then
+      log "OpenCode interactive auth mode (cached auth.json)"
+    else
+      echo "OpenCode auth not configured. Set OPENCODE_PROVIDER + API key, or run: opencode auth login." >&2
+      exit 1
+    fi
+
+    cmd=(opencode run)
+    opencode_model="${OPENCODE_MODEL:-}"
+    if [ -n "$opencode_model" ]; then
+      cmd+=(--model "$opencode_model")
+      log "OpenCode model: ${opencode_model}"
+    fi
+    cmd+=("$prompt")
+    run_in_repo=1
+    ;;
+
   *)
-    echo "Unsupported AGENT_PROVIDER: ${provider}. Use codex|gemini|claude." >&2
+    echo "Unsupported AGENT_PROVIDER: ${provider}. Use codex|gemini|claude|kilo|opencode." >&2
     exit 1
     ;;
 esac

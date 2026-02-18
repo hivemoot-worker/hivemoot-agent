@@ -1,8 +1,11 @@
 FROM node:24-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG NPM_VERSION=11.10.0
 ARG CODEX_VERSION=latest
 ARG GEMINI_VERSION=latest
+ARG KILO_VERSION=latest
+ARG OPENCODE_VERSION=latest
 ARG CLAUDE_CODE_VERSION=latest
 ARG HIVEMOOT_CLI_VERSION=latest
 
@@ -29,6 +32,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && apt-get purge -y gpg && apt-get autoremove -y \
   && rm -rf /var/lib/apt/lists/*
 
+# Keep the base npm installation patched before switching to a custom global
+# prefix; this removes vulnerable tar transitive dependencies from npm itself.
+RUN env -u NPM_CONFIG_PREFIX npm install -g "npm@${NPM_VERSION}" \
+  && env -u NPM_CONFIG_PREFIX npm cache clean --force
+
 RUN mkdir -p /usr/local/share/npm-global \
   && chown -R node:node /usr/local/share/npm-global
 
@@ -41,6 +49,8 @@ USER node
 RUN npm install -g \
   "@openai/codex@${CODEX_VERSION}" \
   "@google/gemini-cli@${GEMINI_VERSION}" \
+  "@kilocode/cli@${KILO_VERSION}" \
+  "opencode-ai@${OPENCODE_VERSION}" \
   "@hivemoot-dev/cli@${HIVEMOOT_CLI_VERSION}" \
   && npm cache clean --force
 
@@ -50,7 +60,7 @@ RUN npm install -g \
 WORKDIR /tmp/claude-install
 RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
   && rm -rf /tmp/claude-install \
-  && mkdir -p /home/node/.codex /home/node/.gemini /home/node/.claude /home/node/.config/claude
+  && mkdir -p /home/node/.codex /home/node/.gemini /home/node/.claude /home/node/.config/claude /home/node/.config/kilo /home/node/.config/opencode /home/node/.local/share/opencode
 
 USER root
 
@@ -59,6 +69,8 @@ USER root
 # so codex/gemini/claude/hivemoot stay discoverable.
 RUN ln -sf /usr/local/share/npm-global/bin/codex /usr/local/bin/codex \
   && ln -sf /usr/local/share/npm-global/bin/gemini /usr/local/bin/gemini \
+  && ln -sf /usr/local/share/npm-global/bin/kilo /usr/local/bin/kilo \
+  && ln -sf /usr/local/share/npm-global/bin/opencode /usr/local/bin/opencode \
   && ln -sf /home/node/.local/bin/claude /usr/local/bin/claude \
   && ln -sf /usr/local/share/npm-global/bin/hivemoot /usr/local/bin/hivemoot
 
