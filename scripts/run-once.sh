@@ -118,6 +118,8 @@ timeout_secs="${AGENT_TIMEOUT_SECONDS:-1800}"
 agent_git_name="${AGENT_GIT_NAME:-}"
 agent_git_email="${AGENT_GIT_EMAIL:-}"
 
+validate_workspace_root "$workspace_root"
+
 # When REPO_DIR/LOG_DIR are set externally (run-multi.sh, run-loop.sh),
 # isolation is handled by the caller. Otherwise, generate a JOB_ID to
 # namespace workspace/HOME/logs so every standalone run is isolated.
