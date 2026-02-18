@@ -106,6 +106,7 @@ done
 
 provider="${AGENT_PROVIDER:-claude}"
 auth_mode="${AGENT_AUTH_MODE:-auto}"
+ephemeral_credential_storage="${EPHEMERAL_CREDENTIAL_STORAGE:-0}"
 hivemoot_buzz_role="${HIVEMOOT_BUZZ_ROLE:-}"
 target_repo="${TARGET_REPO:-}"
 workspace_root="${WORKSPACE_ROOT:-/workspace}"
@@ -149,6 +150,25 @@ case "$auth_mode" in
     exit 1
     ;;
 esac
+
+case "$ephemeral_credential_storage" in
+  1|true|TRUE|yes|YES)
+    ephemeral_credential_storage=1
+    ;;
+  ''|0|false|FALSE|no|NO)
+    ephemeral_credential_storage=0
+    ;;
+  *)
+    echo "Unsupported EPHEMERAL_CREDENTIAL_STORAGE: ${ephemeral_credential_storage}. Use 0|1." >&2
+    exit 1
+    ;;
+esac
+
+if [ "$ephemeral_credential_storage" -eq 1 ] && [ "$auth_mode" != "api_key" ]; then
+  echo "EPHEMERAL_CREDENTIAL_STORAGE=1 requires AGENT_AUTH_MODE=api_key." >&2
+  echo "Subscription auth needs persistent provider homes from docker compose auth-* login runs." >&2
+  exit 1
+fi
 
 validate_target_repo "$target_repo"
 

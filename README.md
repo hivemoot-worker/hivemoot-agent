@@ -155,6 +155,22 @@ RUN_MODE=loop WATCH_MENTIONS=1 docker compose up hivemoot-agent
 Requires `TARGET_REPO` and user tokens (not installation tokens). Additional settings:
 - `WATCH_POLL_INTERVAL` — seconds between mention polls (default: 300)
 
+## Ephemeral Credential Mode (API-Key Only)
+
+Use the hardened service when you want provider credentials/config in RAM (`tmpfs`)
+instead of persistent Docker volumes:
+
+```bash
+docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent-ephemeral
+```
+
+```bash
+RUN_MODE=loop AGENT_AUTH_MODE=api_key docker compose up hivemoot-agent-ephemeral
+```
+
+This mode sets `EPHEMERAL_CREDENTIAL_STORAGE=1` and requires `AGENT_AUTH_MODE=api_key`.
+It is incompatible with subscription auth because `auth-*` login state must persist between runs.
+
 ## Subscription Auth (Optional)
 
 For subscription mode (no API key needed), authenticate once per provider:
@@ -382,6 +398,7 @@ OPENROUTER_API_KEY_FILE=/run/secrets/openrouter_api_key
 | `TARGET_REPO is required` | Set `TARGET_REPO=owner/repo` in `.env` |
 | `GitHub token cannot access target repository` | Token lacks access to that repo |
 | Provider auth errors in `api_key` mode | Verify key env/file is set |
+| `EPHEMERAL_CREDENTIAL_STORAGE=1 requires AGENT_AUTH_MODE=api_key` | Use `AGENT_AUTH_MODE=api_key`, or switch to `hivemoot-agent` for subscription auth |
 | Subscription auth errors | Run the matching `auth-*` command first |
 | `KILO_PROVIDER is required` | Set `KILO_PROVIDER` (e.g. `openrouter`) or `KILOCODE_TOKEN` |
 | Kilo permission prompts in `--auto` mode | The `--auto` flag should bypass all prompts; check Kilo CLI version (`kilo --version`) |

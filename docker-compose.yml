@@ -1,4 +1,4 @@
-x-agent-base: &agent-base
+x-agent-base-common: &agent-base-common
   build:
     context: .
     dockerfile: Dockerfile
@@ -16,6 +16,11 @@ x-agent-base: &agent-base
         memory: ${AGENT_MEMORY_LIMIT:-16g}
         cpus: "${AGENT_CPU_LIMIT:-4.0}"
         pids: ${AGENT_PIDS_LIMIT:-512}
+  stdin_open: true
+  tty: true
+
+x-agent-base-persistent: &agent-base-persistent
+  <<: *agent-base-common
   tmpfs:
     - /tmp:size=2g,mode=1777
   volumes:
@@ -27,8 +32,20 @@ x-agent-base: &agent-base
     - kilo-config:/home/node/.config/kilo
     - opencode-config:/home/node/.config/opencode
     - opencode-data:/home/node/.local/share/opencode
-  stdin_open: true
-  tty: true
+
+x-agent-base-ephemeral: &agent-base-ephemeral
+  <<: *agent-base-common
+  tmpfs:
+    - /tmp:size=2g,mode=1777
+    - /home/node/.codex
+    - /home/node/.gemini
+    - /home/node/.claude
+    - /home/node/.config/claude
+    - /home/node/.config/kilo
+    - /home/node/.config/opencode
+    - /home/node/.local/share/opencode
+  volumes:
+    - ./data:/workspace
 
 x-agent-env: &agent-env
   RUN_MODE: ${RUN_MODE:-once}
@@ -91,30 +108,40 @@ x-agent-env: &agent-env
   PERIODIC_INTERVAL_SECS: ${PERIODIC_INTERVAL_SECS:-3600}
   PERIODIC_JITTER_SECS: ${PERIODIC_JITTER_SECS:-300}
   JOB_ID: ${JOB_ID:-}
+  EPHEMERAL_CREDENTIAL_STORAGE: ${EPHEMERAL_CREDENTIAL_STORAGE:-}
 
 services:
   hivemoot-agent:
-    <<: *agent-base
+    <<: *agent-base-persistent
     stop_grace_period: 5m
     environment:
       <<: *agent-env
       TARGET_REPO: ${TARGET_REPO:-}
       WORKSPACE_ROOT: ${WORKSPACE_ROOT:-/workspace/repo}
 
+  hivemoot-agent-ephemeral:
+    <<: *agent-base-ephemeral
+    stop_grace_period: 5m
+    environment:
+      <<: *agent-env
+      TARGET_REPO: ${TARGET_REPO:-}
+      WORKSPACE_ROOT: ${WORKSPACE_ROOT:-/workspace/repo}
+      EPHEMERAL_CREDENTIAL_STORAGE: "1"
+
   auth-codex:
-    <<: *agent-base
+    <<: *agent-base-persistent
     entrypoint: ["codex", "login", "--device-auth"]
 
   auth-gemini:
-    <<: *agent-base
+    <<: *agent-base-persistent
     entrypoint: ["gemini"]
 
   auth-claude:
-    <<: *agent-base
+    <<: *agent-base-persistent
     entrypoint: ["claude"]
 
   auth-kilo:
-    <<: *agent-base
+    <<: *agent-base-persistent
     entrypoint: ["kilo", "auth", "login"]
 
 volumes:
