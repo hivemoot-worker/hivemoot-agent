@@ -188,7 +188,8 @@ LOCAL_SUB="docker compose -f docker-compose.yml -f docker-compose.subscription.l
 
 ```bash
 $LOCAL_SUB run --rm auth-codex    # device auth: prints a browser link + code
-$LOCAL_SUB run --rm auth-claude   # interactive login in terminal/browser
+$LOCAL_SUB run --rm auth-claude        # Claude option A: interactive login in terminal/browser
+$LOCAL_SUB run --rm auth-claude-token  # Claude option B: token bootstrap flow
 $LOCAL_SUB run --rm auth-gemini   # interactive login
 $LOCAL_SUB run --rm auth-kilo     # interactive login
 ```
