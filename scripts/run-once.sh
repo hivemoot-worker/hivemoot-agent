@@ -299,6 +299,8 @@ if ! effective_auth_mode="$(resolve_effective_auth_mode "$provider" "$auth_mode"
   exit 1
 fi
 
+validate_workspace_root "$workspace_root"
+
 # When REPO_DIR/LOG_DIR are set externally (run-multi.sh, run-loop.sh),
 # isolation is handled by the caller. Otherwise, generate a JOB_ID to
 # namespace workspace/HOME/logs so every standalone run is isolated.
