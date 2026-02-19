@@ -161,6 +161,37 @@ Requires `TARGET_REPO` and user tokens (not installation tokens). Additional set
 
 When `AGENT_PROVIDER=codex`, mention-triggered runs keep one Codex session per GitHub notification thread and resume follow-up mentions with the saved thread/session UUID (`codex exec resume <SESSION_ID>`). The UUID is extracted from Codex `--json` output (`thread.started.thread_id`) and persisted under each agent workspace (for example `/workspace/repo/agents/<agent-id>/sessions/codex/tool-session-map.tsv`), scoped by runtime settings (repo/provider/model/tool options + mention key) to avoid cross-config reuse. Periodic runs (no mention session key) always start fresh. Resume is strict: sessions reset when idle/age limits are exceeded (`SESSION_RESUME_MAX_IDLE_HOURS` / `SESSION_RESUME_MAX_AGE_HOURS`), and any failed resume is retried once as a fresh session.
 
+## Host Controller (Phase 2 MVP)
+
+`scripts/controller.sh` runs on the host and spawns one isolated worker container per job (`RUN_MODE=once`), instead of running all agents as background processes in a shared container.
+
+What it does:
+- Uses `spawn_worker()` as the container-launch seam for future backend swaps.
+- Applies worker hardening flags (`--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only`, tmpfs mounts, resource limits).
+- Enforces per-repo mutual exclusion with `flock` plus a global max worker cap.
+- Writes per-job artifacts:
+  - `jobs/<job-id>/job.json` (job spec)
+  - `workspaces/<job-id>/.hivemoot/status` and `summary` (completion sentinel)
+
+Run one periodic cycle:
+
+```bash
+TARGET_REPO=owner/repo \
+AGENT_ID_01=worker \
+AGENT_GITHUB_TOKEN_01=ghp_xxx \
+CONTROLLER_WORKSPACE_ROOT="$PWD/data/controller" \
+WORKER_IMAGE=hivemoot-agent:local \
+bash scripts/controller.sh
+```
+
+Run continuously:
+
+```bash
+CONTROLLER_RUN_MODE=loop bash scripts/controller.sh
+```
+
+Important: this script is designed to run on the host with direct `docker` access. Do not run it from inside another container with a mounted `docker.sock`.
+
 ## Subscription Auth (Optional)
 
 For subscription mode (no API key needed), authenticate once per provider:
