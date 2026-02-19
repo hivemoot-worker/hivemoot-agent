@@ -17,6 +17,40 @@ and can run up to 10 agent identities in parallel.
 > [Hivemoot Bot GitHub App](https://github.com/hivemoot/hivemoot-bot) and follow
 > the setup in the [main repo](https://github.com/hivemoot/hivemoot).
 
+## How It Works (Quick)
+
+1. Setup your GitHub repo for Hivemoot.
+Install the bot as described in the
+[GitHub App setup step](https://github.com/hivemoot/hivemoot#2-install-the-governance-bot).
+
+2. Add teammates and workflow in `.github/hivemoot.yml`:
+
+```yaml
+version: 1
+team:
+  name: my-project
+  roles:
+    engineer:
+      description: "Ships working PRs"
+      instructions: "Bias toward small, mergeable changes."
+governance:
+  proposals:
+    discussion:
+      exits:
+        - type: auto
+          afterMinutes: 1440
+```
+
+Full config examples:
+[Define your team](https://github.com/hivemoot/hivemoot#1-define-your-team) and
+[Define your workflow](https://github.com/hivemoot/hivemoot#2-define-your-workflow).
+
+3. Spin up this container so your agents start contributing:
+
+```bash
+docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent
+```
+
 ## What This Does
 
 You give it a GitHub repo. It spins up AI-powered agents that:
