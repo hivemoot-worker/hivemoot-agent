@@ -40,6 +40,23 @@ sanitize_lock_key() {
   printf '%s' "$value" | tr -c 'A-Za-z0-9' '_'
 }
 
+ensure_repo_lock_file() {
+  local repo="$1"
+  local repo_key=""
+  local repo_lock_file="${repo_lock_files[$repo]:-}"
+
+  if [ -n "$repo_lock_file" ]; then
+    return 0
+  fi
+
+  repo_key="$(sanitize_lock_key "$repo")"
+  repo_lock_file="${lock_dir}/repo-${repo_key}.lock"
+  mkdir -p "$(dirname "$repo_lock_file")"
+  : > "$repo_lock_file"
+  chmod 600 "$repo_lock_file" 2>/dev/null || true
+  repo_lock_files["$repo"]="$repo_lock_file"
+}
+
 generate_job_id() {
   if [ -r /proc/sys/kernel/random/uuid ]; then
     tr '[:upper:]' '[:lower:]' < /proc/sys/kernel/random/uuid | head -n 1
@@ -162,8 +179,8 @@ spawn_worker() {
     --cap-drop=ALL
     --security-opt=no-new-privileges
     --read-only
-    --tmpfs /tmp:size=2g,mode=1777
-    --tmpfs /usr/local/share/npm-global:size=1g
+    --tmpfs "/tmp:size=2g,mode=1777"
+    --tmpfs "/usr/local/share/npm-global:size=1g"
     --memory "${AGENT_MEMORY_LIMIT:-16g}"
     --cpus "${AGENT_CPU_LIMIT:-4.0}"
     --pids-limit "${AGENT_PIDS_LIMIT:-512}"
@@ -337,8 +354,7 @@ run_job() {
   local extra_prompt="$5"
 
   local token_file="${agent_token_files[$agent_id]}"
-  local repo_key=""
-  local repo_lock_file=""
+  local repo_lock_file="${repo_lock_files[$repo]:-}"
   local job_workspace="${workspaces_root}/${job_id}"
   local job_home="${homes_root}/${job_id}"
   local job_run_dir="${runs_root}/${job_id}"
@@ -351,16 +367,18 @@ run_job() {
   local exit_code=125
   local log_pid=0
 
-  repo_key="$(sanitize_lock_key "$repo")"
-  repo_lock_file="${lock_dir}/repo-${repo_key}.lock"
+  if [ -z "$repo_lock_file" ]; then
+    ensure_repo_lock_file "$repo"
+    repo_lock_file="${repo_lock_files[$repo]}"
+  fi
 
-  mkdir -p "$job_workspace" "$job_home" "$job_run_dir" "$job_spec_dir" "$(dirname "$repo_lock_file")"
+  mkdir -p "$job_workspace" "$job_home" "$job_run_dir" "$job_spec_dir"
   chmod 700 "$job_workspace" "$job_home" "$job_run_dir" "$job_spec_dir" 2>/dev/null || true
 
   write_job_spec "$job_spec_file" "$job_id" "$repo" "$agent_id" "$trigger_type" "$agent_timeout_seconds"
   write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "queued" "-"
 
-  exec 200>"$repo_lock_file"
+  exec 200>>"$repo_lock_file"
   flock 200
 
   write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "running" "-"
@@ -415,6 +433,8 @@ launch_job() {
   local agent_id="$3"
   local trigger_type="$4"
   local extra_prompt="$5"
+
+  ensure_repo_lock_file "$repo"
 
   if ! wait_for_available_slot; then
     return 1
@@ -491,7 +511,7 @@ jobs_root="${workspace_root}/jobs"
 runs_root="${workspace_root}/runs"
 workspaces_root="${workspace_root}/workspaces"
 homes_root="${workspace_root}/homes"
-lock_dir="${CONTROLLER_LOCK_DIR:-${workspace_root}/locks}"
+lock_dir="${CONTROLLER_LOCK_DIR:-/tmp/hivemoot-controller-locks}"
 token_tmp_root="${CONTROLLER_TOKEN_TMP_ROOT:-/tmp/hivemoot-controller-token-files}"
 email_domain="${AGENT_GIT_EMAIL_DOMAIN:-agents.local}"
 global_extra_prompt="${AGENT_EXTRA_PROMPT:-}"
@@ -509,6 +529,7 @@ declare -A pid_to_job_id=()
 declare -A pid_to_repo=()
 declare -A pid_to_agent=()
 declare -A agent_token_files=()
+declare -A repo_lock_files=()
 
 case "$controller_mode" in
   once|loop) ;;
@@ -545,6 +566,7 @@ fi
 
 mkdir -p "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$lock_dir" "$token_tmp_root"
 chmod 700 "$workspace_root" "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$lock_dir" "$token_tmp_root" 2>/dev/null || true
+ensure_repo_lock_file "$target_repo"
 
 declare -A seen_agents=()
 declare -a agent_ids=()

@@ -168,7 +168,7 @@ When `AGENT_PROVIDER=codex`, mention-triggered runs keep one Codex session per G
 What it does:
 - Uses `spawn_worker()` as the container-launch seam for future backend swaps.
 - Applies worker hardening flags (`--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only`, tmpfs mounts, resource limits).
-- Enforces per-repo mutual exclusion with `flock` plus a global max worker cap.
+- Enforces per-repo mutual exclusion with `flock` plus a global max worker cap (locks default under `/tmp/hivemoot-controller-locks`).
 - Writes per-job artifacts:
   - `jobs/<job-id>/job.json` (job spec)
   - `workspaces/<job-id>/.hivemoot/status` and `summary` (completion sentinel)

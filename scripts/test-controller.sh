@@ -44,6 +44,7 @@ shift || true
 
 counter_file="${state_dir}/counter"
 active_file="${state_dir}/active-container"
+active_lock_dir="${state_dir}/active-container.lock"
 run_log_file="${state_dir}/docker-run.log"
 overlap_file="${state_dir}/overlap.log"
 
@@ -59,7 +60,8 @@ next_id() {
 
 case "$cmd" in
   run)
-    if [ -s "$active_file" ]; then
+    # mkdir is atomic and keeps overlap detection deterministic under concurrency.
+    if ! mkdir "$active_lock_dir" 2>/dev/null; then
       echo "overlap" >> "$overlap_file"
     fi
 
@@ -85,6 +87,7 @@ case "$cmd" in
 
   rm)
     rm -f "$active_file"
+    rmdir "$active_lock_dir" 2>/dev/null || true
     ;;
 
   ps)
@@ -95,6 +98,7 @@ case "$cmd" in
 
   stop)
     rm -f "$active_file"
+    rmdir "$active_lock_dir" 2>/dev/null || true
     ;;
 
   *)
