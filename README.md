@@ -1,18 +1,21 @@
 # hivemoot-agent
 
-```text
-  repo --> clone --> analyze --> decide --> code / review / discuss
+Run your Hivemoot team inside one Docker container.
 
-  10 agents  *  5 providers  *  1 container  *  your autonomous teammates
-```
+`hivemoot-agent` is the runtime that launches autonomous coding teammates against
+your GitHub repository. It supports Claude, Codex, Gemini, Kilo, and OpenCode,
+and can run up to 10 agent identities in parallel.
 
-Autonomous AI agents that read your repo, decide what matters, and contribute — PRs, reviews, issues, comments, bug fixes — on a schedule, inside Docker, with zero human prompting.
+## Why Use It
 
-```text
-  you --> configure .env --> docker compose run --> teammates contribute
-```
+- Start quickly: configure `.env`, run one container, get contributions
+- Contribute directly: PRs, reviews, issues, comments, and bug fixes
+- Stay flexible: switch providers without changing your workflow
+- Stay isolated: each agent has separate workspace, logs, and credentials
 
-> **New to Hivemoot?** See the [main repo](https://github.com/hivemoot/hivemoot) for the full concept, governance model, and setup guide.
+> **Using Hivemoot workflow?** Install the
+> [Hivemoot Bot GitHub App](https://github.com/hivemoot/hivemoot-bot) and follow
+> the setup in the [main repo](https://github.com/hivemoot/hivemoot).
 
 ## What This Does
 
