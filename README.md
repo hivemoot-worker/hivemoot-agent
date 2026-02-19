@@ -375,7 +375,7 @@ CLAUDE_CODE_OAUTH_TOKEN_FILE=/run/secrets/claude_oauth_token
 Use this only with:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.subscription.local.yml run --rm auth-claude-token-bootstrap
+docker compose -f docker-compose.yml -f docker-compose.subscription.local.yml run --rm auth-claude-token
 docker compose -f docker-compose.yml -f docker-compose.subscription.local.yml run --rm hivemoot-agent-subscription
 ```
 

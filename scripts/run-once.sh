@@ -753,8 +753,8 @@ You are resuming a prior session for this mention thread. Some data in your cont
       if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
         log "Using Claude long-lived OAuth token"
       elif [ ! -d "${HOME}/.claude" ] && [ ! -d "${HOME}/.config/claude" ]; then
-        echo "Claude subscription credentials not found. Run with local override: docker compose -f docker-compose.yml -f docker-compose.subscription.local.yml run --rm auth-claude-login" >&2
-        echo "Or bootstrap with token: docker compose -f docker-compose.yml -f docker-compose.subscription.local.yml run --rm auth-claude-token-bootstrap" >&2
+        echo "Claude subscription credentials not found. Run with local override: docker compose -f docker-compose.yml -f docker-compose.subscription.local.yml run --rm auth-claude" >&2
+        echo "Or bootstrap with token: docker compose -f docker-compose.yml -f docker-compose.subscription.local.yml run --rm auth-claude-token" >&2
         exit 1
       else
         log "Using Claude subscription/cached auth (no API key required)"

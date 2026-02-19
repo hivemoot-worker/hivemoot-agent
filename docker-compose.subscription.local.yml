@@ -53,13 +53,13 @@ services:
       - .env
     entrypoint: ["gemini"]
 
-  auth-claude-login:
+  auth-claude:
     <<: *agent-base-subscription
     env_file:
       - .env
     entrypoint: ["claude"]
 
-  auth-claude-token-bootstrap:
+  auth-claude-token:
     <<: *agent-base-subscription
     env_file:
       - .env
