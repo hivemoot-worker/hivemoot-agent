@@ -35,6 +35,18 @@ agent_failure_backoff_jitter_pct="${PERIODIC_AGENT_FAILURE_BACKOFF_JITTER_PCT:-1
 # Mention watching (opt-in)
 watch_mentions="${WATCH_MENTIONS:-}"
 watch_poll_interval="${WATCH_POLL_INTERVAL:-300}"
+ephemeral_credential_storage_raw="${EPHEMERAL_CREDENTIAL_STORAGE:-0}"
+
+if ! ephemeral_credential_storage="$(normalize_ephemeral_credential_storage "$ephemeral_credential_storage_raw")"; then
+  echo "Unsupported EPHEMERAL_CREDENTIAL_STORAGE: ${ephemeral_credential_storage_raw}. Use 0|1." >&2
+  exit 1
+fi
+
+if [ "$ephemeral_credential_storage" -eq 1 ] && [ "${AGENT_AUTH_MODE:-auto}" != "api_key" ]; then
+  echo "EPHEMERAL_CREDENTIAL_STORAGE=1 requires AGENT_AUTH_MODE=api_key." >&2
+  echo "Subscription auth needs persistent provider homes from docker compose auth-* login runs." >&2
+  exit 1
+fi
 
 # Validate numeric settings
 for var_name in periodic_interval periodic_jitter max_failures \
@@ -304,7 +316,7 @@ prepare_hivemoot_cli
 
 for index in "${!agent_ids[@]}"; do
   aid="${agent_ids[$index]}"
-  agent_home="${workspace_root}/homes/${aid}"
+  agent_home="$(resolve_managed_agent_home "$workspace_root" "$aid" "$ephemeral_credential_storage")"
 
   mkdir -p \
     "$agent_home/.config" \
@@ -381,7 +393,9 @@ try_run_agent() {
   local agent_workspace="${workspace_root}/agents/${agent_id}"
   local agent_repo="${agent_workspace}/repo"
   local agent_log_dir="${workspace_root}/runs/${agent_id}"
-  local agent_home="${workspace_root}/homes/${agent_id}"
+  local agent_home=""
+
+  agent_home="$(resolve_managed_agent_home "$workspace_root" "$agent_id" "$ephemeral_credential_storage")"
 
   mkdir -p "$agent_workspace" "$agent_log_dir" "$agent_home"
 

@@ -19,6 +19,18 @@ launch_jitter_min="${LAUNCH_JITTER_MIN_SECS:-120}"
 launch_jitter_max="${LAUNCH_JITTER_MAX_SECS:-180}"
 max_agents=10
 token_tmp_root="/tmp/hivemoot-agent-token-files"
+ephemeral_credential_storage_raw="${EPHEMERAL_CREDENTIAL_STORAGE:-0}"
+
+if ! ephemeral_credential_storage="$(normalize_ephemeral_credential_storage "$ephemeral_credential_storage_raw")"; then
+  echo "Unsupported EPHEMERAL_CREDENTIAL_STORAGE: ${ephemeral_credential_storage_raw}. Use 0|1." >&2
+  exit 1
+fi
+
+if [ "$ephemeral_credential_storage" -eq 1 ] && [ "${AGENT_AUTH_MODE:-auto}" != "api_key" ]; then
+  echo "EPHEMERAL_CREDENTIAL_STORAGE=1 requires AGENT_AUTH_MODE=api_key." >&2
+  echo "Subscription auth needs persistent provider homes from docker compose auth-* login runs." >&2
+  exit 1
+fi
 
 case "$launch_jitter_min" in
   ''|*[!0-9]*) echo "LAUNCH_JITTER_MIN_SECS must be a non-negative integer" >&2; exit 1 ;;
@@ -306,7 +318,7 @@ for index in "${!agent_ids[@]}"; do
   agent_workspace="${workspace_root}/agents/${agent_id}"
   agent_repo="${agent_workspace}/repo"
   agent_log_dir="${workspace_root}/runs/${agent_id}"
-  agent_home="${workspace_root}/homes/${agent_id}"
+  agent_home="$(resolve_managed_agent_home "$workspace_root" "$agent_id" "$ephemeral_credential_storage")"
   wrapper_log="${agent_log_dir}/$(date '+%Y%m%d-%H%M%S')-${agent_id}-wrapper.log"
 
   mkdir -p "$agent_workspace" "$agent_log_dir" "$agent_home"

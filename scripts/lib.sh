@@ -19,6 +19,40 @@ trim() {
   printf '%s' "$value"
 }
 
+normalize_ephemeral_credential_storage() {
+  local raw_value="${1:-0}"
+
+  case "$raw_value" in
+    1|true|TRUE|yes|YES) printf '1' ;;
+    ''|0|false|FALSE|no|NO) printf '0' ;;
+    *) return 1 ;;
+  esac
+}
+
+resolve_managed_agent_home() {
+  local workspace_root="$1"
+  local agent_id="$2"
+  local ephemeral_credential_storage="${3:-0}"
+
+  if [ "$ephemeral_credential_storage" = "1" ]; then
+    printf '/tmp/hivemoot-agent-home/agents/%s' "$agent_id"
+  else
+    printf '%s/homes/%s' "$workspace_root" "$agent_id"
+  fi
+}
+
+resolve_job_home() {
+  local workspace_root="$1"
+  local job_id="$2"
+  local ephemeral_credential_storage="${3:-0}"
+
+  if [ "$ephemeral_credential_storage" = "1" ]; then
+    printf '/tmp/hivemoot-agent-home/jobs/%s' "$job_id"
+  else
+    printf '%s/%s/home' "$workspace_root" "$job_id"
+  fi
+}
+
 load_secret_from_file() {
   local var_name="$1"
   local file_var_name="${var_name}_FILE"
@@ -141,7 +175,7 @@ seed_shared_provider_state() {
 # seed_provider_home when JOB_ID isolation is active.
 seed_provider_auth() {
   local agent_home="$1"
-  local source_home="/home/node"
+  local source_home="${2:-/home/node}"
 
   # Claude Code: auth tokens in ~/.config/claude/
   if [ -d "${source_home}/.config/claude" ]; then

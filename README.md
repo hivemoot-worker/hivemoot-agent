@@ -176,6 +176,8 @@ RUN_MODE=loop AGENT_AUTH_MODE=api_key docker compose up hivemoot-agent-ephemeral
 
 This mode sets `EPHEMERAL_CREDENTIAL_STORAGE=1` and requires `AGENT_AUTH_MODE=api_key`.
 It is incompatible with subscription auth because `auth-*` login state must persist between runs.
+When enabled, per-run agent `HOME` paths move to `/tmp/hivemoot-agent-home/...` so
+provider auth files are not written under `/workspace`.
 
 ## Subscription Auth (Optional)
 

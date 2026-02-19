@@ -267,6 +267,12 @@ session_resume_max_age_hours="${SESSION_RESUME_MAX_AGE_HOURS:-24}"
 agent_git_name="${AGENT_GIT_NAME:-}"
 agent_git_email="${AGENT_GIT_EMAIL:-}"
 agent_session_key="${AGENT_SESSION_KEY:-}"
+ephemeral_credential_storage_raw="$ephemeral_credential_storage"
+
+if ! ephemeral_credential_storage="$(normalize_ephemeral_credential_storage "$ephemeral_credential_storage")"; then
+  echo "Unsupported EPHEMERAL_CREDENTIAL_STORAGE: ${ephemeral_credential_storage_raw}. Use 0|1." >&2
+  exit 1
+fi
 
 case "$session_resume" in
   0|1) ;;
@@ -302,7 +308,7 @@ fi
 if [ -n "$job_id" ] && [ "$managed_mode" -eq 0 ]; then
   repo_dir="${workspace_root}/${job_id}/repo"
   log_dir="${workspace_root}/${job_id}/runs"
-  job_home="${workspace_root}/${job_id}/home"
+  job_home="$(resolve_job_home "$workspace_root" "$job_id" "$ephemeral_credential_storage")"
   log "Job isolation: JOB_ID=${job_id}"
 else
   repo_dir="${REPO_DIR:-${workspace_root}/repo}"
@@ -318,19 +324,6 @@ case "$auth_mode" in
   auto|api_key|subscription) ;;
   *)
     echo "Unsupported AGENT_AUTH_MODE: ${auth_mode}. Use auto|api_key|subscription." >&2
-    exit 1
-    ;;
-esac
-
-case "$ephemeral_credential_storage" in
-  1|true|TRUE|yes|YES)
-    ephemeral_credential_storage=1
-    ;;
-  ''|0|false|FALSE|no|NO)
-    ephemeral_credential_storage=0
-    ;;
-  *)
-    echo "Unsupported EPHEMERAL_CREDENTIAL_STORAGE: ${ephemeral_credential_storage}. Use 0|1." >&2
     exit 1
     ;;
 esac
@@ -477,8 +470,12 @@ cleanup_job() {
   # Remove the entire job-scoped directory (repo, logs, HOME).
   # This prevents accumulation when JOB_ID is auto-generated for standalone runs.
   local job_root="${workspace_root}/${job_id}"
+  local persistent_job_home="${job_root}/home"
   if [ -d "$job_root" ]; then
     rm -rf "$job_root"
+  fi
+  if [ "$job_home" != "$persistent_job_home" ] && [ -d "$job_home" ]; then
+    rm -rf "$job_home"
   fi
   # Remove job-scoped tmp files
   if [ -n "$job_id" ]; then
