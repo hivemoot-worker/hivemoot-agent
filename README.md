@@ -14,6 +14,11 @@ Autonomous AI agents that read your repo, decide what matters, and contribute â€
 
 > **New to Hivemoot?** See the [main repo](https://github.com/hivemoot/hivemoot) for the full concept, governance model, and setup guide.
 
+> [!WARNING]
+> **Not fully production-ready yet.**
+> This container still requires additional security hardening before production use.
+> For now, use it for experimentation on personal projects in private repositories with a small set of trusted contributors.
+
 ## What This Does
 
 You give it a GitHub repo. It spins up AI-powered agents that:
