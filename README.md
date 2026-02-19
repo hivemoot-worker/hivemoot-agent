@@ -177,15 +177,33 @@ docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent
 
 ## Local Subscription Development (Optional)
 
-If you want local-only subscription login workflows, use the companion compose file:
+Use this only on your local machine when you want provider subscription auth
+instead of API keys.
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.subscription.local.yml run --rm auth-codex
-docker compose -f docker-compose.yml -f docker-compose.subscription.local.yml run --rm hivemoot-agent-subscription
+LOCAL_SUB="docker compose -f docker-compose.yml -f docker-compose.subscription.local.yml"
 ```
 
-The `docker-compose.subscription.local.yml` file restores persistent provider homes
-and `auth-*` services for local development. Keep this path out of production/default runs.
+1. Run the auth service for your provider:
+
+```bash
+$LOCAL_SUB run --rm auth-codex    # device auth: prints a browser link + code
+$LOCAL_SUB run --rm auth-claude   # interactive login in terminal/browser
+$LOCAL_SUB run --rm auth-gemini   # interactive login
+$LOCAL_SUB run --rm auth-kilo     # interactive login
+```
+
+2. Complete the login flow once (open link, approve, return).
+
+3. Start the agent with subscription mode:
+
+```bash
+$LOCAL_SUB run --rm hivemoot-agent-subscription
+```
+
+`docker-compose.subscription.local.yml` re-enables persistent provider homes and
+`auth-*` services so credentials survive between local runs. Keep this override
+out of production/default runs.
 
 ## Kilo Provider Comparison
 
