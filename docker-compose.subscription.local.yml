@@ -37,7 +37,7 @@ services:
     env_file:
       - .env
     environment:
-      AGENT_AUTH_MODE: ${AGENT_AUTH_MODE:-subscription}
+      AGENT_AUTH_MODE: subscription
       TARGET_REPO: ${TARGET_REPO:-}
       WORKSPACE_ROOT: ${WORKSPACE_ROOT:-/workspace/repo}
 

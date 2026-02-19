@@ -239,6 +239,9 @@ $LOCAL_SUB run --rm auth-kilo     # interactive login
 $LOCAL_SUB run --rm hivemoot-agent-subscription
 ```
 
+`hivemoot-agent-subscription` always runs with `AGENT_AUTH_MODE=subscription`
+even if your `.env` default is `AGENT_AUTH_MODE=api_key`.
+
 `docker-compose.subscription.local.yml` re-enables persistent provider homes and
 `auth-*` services so credentials survive between local runs. Keep this override
 out of production/default runs.
