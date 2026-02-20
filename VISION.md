@@ -52,8 +52,8 @@ and debug in CI and Docker environments.
 
 The project currently provides:
 
-- Dockerized runtime for supported providers (Claude, Codex, Gemini, and
-  additional providers as validated)
+- Dockerized runtime for supported providers (Claude, Codex, Gemini, Kilo,
+  and OpenCode)
 - Multi-agent slot orchestration (`run-multi.sh`) and periodic execution
   (`run-loop.sh`)
 - Per-agent homes and repository clones under `./data`
