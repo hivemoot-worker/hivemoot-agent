@@ -1,4 +1,4 @@
-x-agent-base: &agent-base
+x-agent-base-common: &agent-base-common
   build:
     context: .
     dockerfile: Dockerfile
@@ -16,27 +16,34 @@ x-agent-base: &agent-base
         memory: ${AGENT_MEMORY_LIMIT:-16g}
         cpus: "${AGENT_CPU_LIMIT:-4.0}"
         pids: ${AGENT_PIDS_LIMIT:-512}
-  tmpfs:
-    - /tmp:size=2g,mode=1777
-  volumes:
-    - ./data:/workspace
-    - codex-home:/home/node/.codex
-    - gemini-home:/home/node/.gemini
-    - claude-home:/home/node/.claude
-    - claude-config:/home/node/.config/claude
-    - kilo-config:/home/node/.config/kilo
-    - opencode-config:/home/node/.config/opencode
-    - opencode-data:/home/node/.local/share/opencode
   stdin_open: true
   tty: true
+
+x-agent-base: &agent-base
+  <<: *agent-base-common
+  tmpfs:
+    - /tmp:size=2g,mode=1777
+    - /home/node/.codex:uid=1000,gid=1000,mode=0700
+    - /home/node/.gemini:uid=1000,gid=1000,mode=0700
+    - /home/node/.claude:uid=1000,gid=1000,mode=0700
+    - /home/node/.config/claude:uid=1000,gid=1000,mode=0700
+    - /home/node/.config/kilo:uid=1000,gid=1000,mode=0700
+    - /home/node/.config/opencode:uid=1000,gid=1000,mode=0700
+    - /home/node/.local/share/opencode:uid=1000,gid=1000,mode=0700
+  volumes:
+    - ./data:/workspace
 
 x-agent-env: &agent-env
   RUN_MODE: ${RUN_MODE:-once}
   AGENT_PROVIDER: ${AGENT_PROVIDER:-claude}
   AGENT_AUTH_MODE: ${AGENT_AUTH_MODE:-api_key}
   AGENT_TIMEOUT_SECONDS: ${AGENT_TIMEOUT_SECONDS:-1800}
+  SESSION_RESUME: ${SESSION_RESUME:-}
+  SESSION_RESUME_ENABLED: ${SESSION_RESUME_ENABLED:-1}
+  SESSION_RESUME_MAX_IDLE_HOURS: ${SESSION_RESUME_MAX_IDLE_HOURS:-12}
+  SESSION_RESUME_MAX_AGE_HOURS: ${SESSION_RESUME_MAX_AGE_HOURS:-24}
   WATCH_MENTIONS: ${WATCH_MENTIONS:-}
-  FRESH_CLONE: ${FRESH_CLONE:-1}
+  GIT_CLONE_DEPTH: ${GIT_CLONE_DEPTH:-50}
   AGENT_MODEL: ${AGENT_MODEL:-}
   AGENT_PROMPT_FILE: ${AGENT_PROMPT_FILE:-}
   AGENT_EXTRA_PROMPT: ${AGENT_EXTRA_PROMPT:-}
@@ -76,6 +83,8 @@ x-agent-env: &agent-env
   GEMINI_API_KEY_FILE: ${GEMINI_API_KEY_FILE:-}
   ANTHROPIC_API_KEY_FILE: ${ANTHROPIC_API_KEY_FILE:-}
   OPENROUTER_API_KEY_FILE: ${OPENROUTER_API_KEY_FILE:-}
+  CLAUDE_CODE_OAUTH_TOKEN_FILE: ${CLAUDE_CODE_OAUTH_TOKEN_FILE:-}
+  CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
   KILO_PROVIDER: ${KILO_PROVIDER:-}
   KILO_MODEL: ${KILO_MODEL:-}
   KILOCODE_TOKEN_FILE: ${KILOCODE_TOKEN_FILE:-}
@@ -100,28 +109,3 @@ services:
       <<: *agent-env
       TARGET_REPO: ${TARGET_REPO:-}
       WORKSPACE_ROOT: ${WORKSPACE_ROOT:-/workspace/repo}
-
-  auth-codex:
-    <<: *agent-base
-    entrypoint: ["codex", "login", "--device-auth"]
-
-  auth-gemini:
-    <<: *agent-base
-    entrypoint: ["gemini"]
-
-  auth-claude:
-    <<: *agent-base
-    entrypoint: ["claude"]
-
-  auth-kilo:
-    <<: *agent-base
-    entrypoint: ["kilo", "auth", "login"]
-
-volumes:
-  codex-home:
-  gemini-home:
-  claude-home:
-  claude-config:
-  kilo-config:
-  opencode-config:
-  opencode-data:
