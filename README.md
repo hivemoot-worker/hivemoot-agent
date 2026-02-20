@@ -209,6 +209,8 @@ What it does:
 - Writes per-job artifacts:
   - `jobs/<job-id>/job.json` (job spec)
   - `workspaces/<job-id>/.hivemoot/status` and `summary` (completion sentinel)
+- Requires Bash 4+ on the host (`declare -A` is used). macOS users should run a newer bash (for example Homebrew bash) explicitly.
+- Provider `*_FILE` values passed through the controller must be absolute host paths so Docker bind mounts succeed.
 
 Run one periodic cycle:
 

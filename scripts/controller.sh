@@ -12,6 +12,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "${SCRIPT_DIR}/lib.sh"
 
+bash_major="${BASH_VERSINFO[0]:-0}"
+if [ "$bash_major" -lt 4 ]; then
+  echo "scripts/controller.sh requires Bash 4 or newer (found ${BASH_VERSION:-unknown})." >&2
+  echo "On macOS, install a newer bash and run it explicitly (for example: /opt/homebrew/bin/bash scripts/controller.sh)." >&2
+  exit 1
+fi
+
 require_non_negative_integer() {
   local name="$1"
   local value="$2"
@@ -142,6 +149,13 @@ append_secret_env() {
   fi
 
   if [ -n "$file_value" ]; then
+    case "$file_value" in
+      /*) ;;
+      *)
+        echo "${file_var_name} must be an absolute path when mounting secret files: ${file_value}" >&2
+        return 1
+        ;;
+    esac
     if [ ! -f "$file_value" ]; then
       echo "${file_var_name} does not exist: ${file_value}" >&2
       return 1
@@ -210,6 +224,7 @@ spawn_worker() {
   append_env_if_set AGENT_PROMPT_FILE
   append_env_if_set AGENT_TIMEOUT_SECONDS
   append_env_if_set AGENT_TOOL_OPTIONS_JSON
+  append_env_if_set GIT_CLONE_DEPTH
   append_env_if_set SESSION_RESUME
   append_env_if_set SESSION_RESUME_MAX_IDLE_HOURS
   append_env_if_set SESSION_RESUME_MAX_AGE_HOURS
@@ -271,6 +286,8 @@ handle_shutdown() {
   fi
 
   shutdown_requested=1
+  mkdir -p "$(dirname "$shutdown_flag_file")" 2>/dev/null || true
+  : > "$shutdown_flag_file"
   log "Shutdown signal received; stopping new launches"
   stop_controller_workers
 }
@@ -366,6 +383,7 @@ run_job() {
   local wait_status=0
   local exit_code=125
   local log_pid=0
+  local log_follow_deadline=0
 
   if [ -z "$repo_lock_file" ]; then
     ensure_repo_lock_file "$repo"
@@ -380,6 +398,12 @@ run_job() {
 
   exec 200>>"$repo_lock_file"
   flock 200
+
+  if [ "$shutdown_requested" -ne 0 ] || [ -f "$shutdown_flag_file" ]; then
+    log "Skipping queued job due to shutdown: id=${job_id} repo=${repo} agent=${agent_id}"
+    write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "cancelled" "-"
+    return 0
+  fi
 
   write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "running" "-"
 
@@ -400,8 +424,18 @@ run_job() {
     wait_status=$?
   fi
 
-  kill "$log_pid" 2>/dev/null || true
-  wait "$log_pid" 2>/dev/null || true
+  # Give `docker logs -f` a short grace window to exit naturally after container stop.
+  if [ "$log_pid" -gt 0 ]; then
+    log_follow_deadline=$((SECONDS + 2))
+    while kill -0 "$log_pid" 2>/dev/null; do
+      if [ "$SECONDS" -ge "$log_follow_deadline" ]; then
+        kill "$log_pid" 2>/dev/null || true
+        break
+      fi
+      sleep 0.1
+    done
+    wait "$log_pid" 2>/dev/null || true
+  fi
 
   if [ "$wait_status" -ne 0 ]; then
     printf '%s\n' "$wait_output" > "${job_run_dir}/docker-wait-error.log"
@@ -507,6 +541,7 @@ periodic_interval="${PERIODIC_INTERVAL_SECS:-3600}"
 periodic_jitter="${PERIODIC_JITTER_SECS:-300}"
 shutdown_grace_secs="${CONTROLLER_SHUTDOWN_GRACE_SECS:-30}"
 workspace_root="${CONTROLLER_WORKSPACE_ROOT:-${WORKSPACE_ROOT:-$(pwd)/data/controller}}"
+shutdown_flag_file="${workspace_root}/shutdown.requested"
 jobs_root="${workspace_root}/jobs"
 runs_root="${workspace_root}/runs"
 workspaces_root="${workspace_root}/workspaces"
@@ -566,6 +601,7 @@ fi
 
 mkdir -p "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$lock_dir" "$token_tmp_root"
 chmod 700 "$workspace_root" "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$lock_dir" "$token_tmp_root" 2>/dev/null || true
+rm -f "$shutdown_flag_file"
 ensure_repo_lock_file "$target_repo"
 
 declare -A seen_agents=()
