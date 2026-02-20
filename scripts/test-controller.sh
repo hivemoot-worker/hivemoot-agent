@@ -28,6 +28,26 @@ assert_eq() {
   fi
 }
 
+find_summary_by_trigger() {
+  local workspace_root="$1"
+  local trigger="$2"
+  local summary=""
+  local -a summaries=()
+
+  shopt -s nullglob
+  summaries=("${workspace_root}"/workspaces/*/.hivemoot/summary)
+  shopt -u nullglob
+
+  for summary in "${summaries[@]}"; do
+    if grep -Fq "trigger=${trigger}" "$summary"; then
+      printf '%s' "$summary"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 setup_mock_docker() {
   local mock_bin="$1"
   mkdir -p "$mock_bin"
@@ -155,6 +175,87 @@ EOF_MOCK
   chmod +x "${mock_bin}/docker"
 }
 
+setup_mock_hivemoot() {
+  local mock_bin="$1"
+  mkdir -p "$mock_bin"
+
+  cat > "${mock_bin}/hivemoot" <<'EOF_MOCK_HIVEMOOT'
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_dir="${MOCK_HIVEMOOT_STATE_DIR:?MOCK_HIVEMOOT_STATE_DIR is required}"
+mkdir -p "$state_dir"
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  watch)
+    repo=""
+    state_file=""
+    interval=""
+
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --repo)
+          repo="${2:-}"
+          shift 2
+          ;;
+        --state-file)
+          state_file="${2:-}"
+          shift 2
+          ;;
+        --interval)
+          interval="${2:-}"
+          shift 2
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+
+    printf '%s\t%s\t%s\n' "$repo" "$state_file" "$interval" >> "${state_dir}/watch.log"
+
+    if [ -n "${MOCK_HIVEMOOT_WATCH_EVENT_FILE:-}" ] && [ -f "${MOCK_HIVEMOOT_WATCH_EVENT_FILE}" ]; then
+      cat "${MOCK_HIVEMOOT_WATCH_EVENT_FILE}"
+    fi
+
+    while true; do
+      sleep 1
+    done
+    ;;
+
+  ack)
+    ack_key="${1:-}"
+    shift || true
+    state_file=""
+
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --state-file)
+          state_file="${2:-}"
+          shift 2
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+
+    printf '%s\t%s\n' "$ack_key" "$state_file" >> "${state_dir}/ack.log"
+    ;;
+
+  *)
+    echo "unexpected hivemoot invocation: ${cmd} $*" >&2
+    exit 1
+    ;;
+esac
+EOF_MOCK_HIVEMOOT
+
+  chmod +x "${mock_bin}/hivemoot"
+}
+
 run_success_case() {
   local repo_root="$1"
   local case_dir="$2"
@@ -270,6 +371,104 @@ run_failure_case() {
   echo "PASS: failure case records failed sentinel with exit code"
 }
 
+run_mention_queue_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_pid=0
+  local mention_summary=""
+  local mention_status=""
+  local ack_log="${case_dir}/mock-state/ack.log"
+  local queue_done_count=0
+  local deadline=0
+  local watch_event_file="${case_dir}/watch-event.jsonl"
+  local watch_log="${case_dir}/mock-state/watch.log"
+  local run_log="${case_dir}/mock-state/docker-run.log"
+  local -a done_files=()
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_hivemoot "${case_dir}/mock-bin"
+
+  cat > "$watch_event_file" <<'EOF_WATCH'
+{"threadId":"thread-123","number":42,"title":"Controller mention test","author":"teammate","body":"please verify mention queue path","url":"https://github.com/hivemoot/hivemoot-agent/issues/42#issuecomment-1","timestamp":"2026-02-20T03:45:00Z"}
+EOF_WATCH
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_HIVEMOOT_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_HIVEMOOT_WATCH_EVENT_FILE="$watch_event_file" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="loop" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="600" \
+    PERIODIC_JITTER_SECS="0" \
+    WATCH_MENTIONS="1" \
+    WATCH_POLL_INTERVAL="1" \
+    bash "${repo_root}/scripts/controller.sh" > "${case_dir}/controller.log" 2>&1 &
+  controller_pid=$!
+
+  deadline=$((SECONDS + 20))
+  while true; do
+    mention_summary="$(find_summary_by_trigger "${case_dir}/workspace" "mention" || true)"
+    if [ -n "$mention_summary" ] && [ -f "$ack_log" ]; then
+      break
+    fi
+
+    if ! kill -0 "$controller_pid" 2>/dev/null; then
+      sed 's/^/  /' "${case_dir}/controller.log" >&2 || true
+      fail "controller exited before mention queue processing completed"
+    fi
+
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      sed 's/^/  /' "${case_dir}/controller.log" >&2 || true
+      fail "timed out waiting for mention-triggered job completion"
+    fi
+    sleep 0.1
+  done
+
+  kill -TERM "$controller_pid"
+  wait "$controller_pid" || true
+
+  [ -n "$mention_summary" ] || fail "missing mention summary file"
+  mention_status="$(dirname "$mention_summary")/status"
+
+  [ -f "$mention_status" ] || fail "missing mention status file"
+  assert_eq "completed" "$(cat "$mention_status")" "mention job should complete successfully"
+  assert_file_contains "$mention_summary" "trigger=mention"
+  assert_file_contains "$mention_summary" "status=completed"
+
+  [ -f "$ack_log" ] || fail "missing ack log from mock hivemoot"
+  assert_file_contains "$ack_log" "thread-123:2026-02-20T03:45:00Z"
+  assert_file_contains "$ack_log" "${case_dir}/workspace/watch-state/worker.json"
+
+  [ -f "$watch_log" ] || fail "missing watch log from mock hivemoot"
+  assert_file_contains "$watch_log" "owner/repo"
+  assert_file_contains "$watch_log" "${case_dir}/workspace/watch-state/worker.json"
+  assert_file_contains "$watch_log" "1"
+
+  [ -f "$run_log" ] || fail "missing docker run log for mention case"
+  assert_file_contains "$run_log" "-e AGENT_SESSION_KEY=mention-thread:thread-123"
+  assert_file_contains "$run_log" "-e AGENT_EXTRA_PROMPT=PRIORITY: You were @mentioned on #42."
+
+  shopt -s nullglob
+  done_files=("${case_dir}/workspace"/queue/*.done)
+  shopt -u nullglob
+
+  queue_done_count="${#done_files[@]}"
+  if [ "$queue_done_count" -lt 1 ]; then
+    fail "expected at least one completed trigger artifact in queue/"
+  fi
+
+  echo "PASS: mention watcher queues trigger, launches job, and acks on success"
+}
+
 run_shutdown_signal_case() {
   local repo_root="$1"
   local case_dir="$2"
@@ -341,5 +540,6 @@ trap 'rm -rf "$tmpdir"' EXIT
 echo "Running controller script checks"
 run_success_case "$repo_root" "${tmpdir}/success"
 run_failure_case "$repo_root" "${tmpdir}/failure"
+run_mention_queue_case "$repo_root" "${tmpdir}/mention"
 run_shutdown_signal_case "$repo_root" "${tmpdir}/shutdown"
 echo "PASS: controller script checks"
