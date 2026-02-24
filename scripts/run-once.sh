@@ -1093,6 +1093,10 @@ else
   if [ "$exit_code" -eq 124 ]; then
     _run_error="timeout"
   fi
+  # AGENT_CONSECUTIVE_FAILURES is passed from run-loop as the pre-run count.
+  # On the first failed run this emits 0; add 1 to include the current failure.
+  # The scheduler exits when its internal counter reaches MAX_CONSECUTIVE_FAILURES,
+  # so consumers should alert at consecutive_failures >= MAX_CONSECUTIVE_FAILURES-1.
   _consecutive_failures="${AGENT_CONSECUTIVE_FAILURES:-0}"
   log_event "$events_file" run.error "$agent_name" "$run_id" "$_event_seq" \
     "\"error\":\"${_run_error}\",\"exit_code\":${exit_code},\"consecutive_failures\":${_consecutive_failures}"

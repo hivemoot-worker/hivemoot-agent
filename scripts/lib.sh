@@ -460,8 +460,17 @@ init_agent_home() {
 
 # Append a structured JSON event to an NDJSON events file.
 # Each call emits one JSON object per line (newline-delimited JSON).
+# Common fields on every event:
+#   event, agent_id, run_id, event_seq, timestamp (UTC RFC3339, Z suffix)
+# Event-specific fields currently emitted by run-once.sh:
+#   run.start: no extra fields
+#   run.complete: duration_secs (integer), outcome ("success")
+#   run.error: error ("run_failed"|"timeout"), exit_code (integer),
+#              consecutive_failures (pre-run failure count)
 # Usage: log_event <events_file> <event_name> <agent_id> <run_id> <event_seq> [extra_fields]
 # extra_fields: raw JSON field list (no outer braces), e.g. '"duration_secs":42,"outcome":"success"'
+# This helper does not JSON-escape extra_fields; callers must only pass
+# trusted, JSON-safe content.
 log_event() {
   local events_file="$1"
   local event_name="$2"
