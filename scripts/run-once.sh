@@ -315,7 +315,7 @@ case "$auth_mode" in
 esac
 
 if ! effective_auth_mode="$(resolve_effective_auth_mode "$provider" "$auth_mode")"; then
-  echo "Unsupported auth mode/provider combination: provider=${provider} auth_mode=${auth_mode}" >&2
+  echo "Unsupported AGENT_PROVIDER + AGENT_AUTH_MODE combination: AGENT_PROVIDER=${provider} AGENT_AUTH_MODE=${auth_mode}" >&2
   exit 1
 fi
 
