@@ -9,6 +9,20 @@ This file gives provider-agnostic startup context for autonomous agents working 
 against a GitHub repository. The runtime supports Claude, Codex, Gemini, Kilo,
 and OpenCode.
 
+## Startup Context Files
+
+Before deep repository exploration, read these root docs when present:
+
+1. `README.md`
+2. `VISION.md`
+3. `ROADMAP.md`
+4. `CONTRIBUTING.md`
+5. `AGENTS.md`
+6. `HOW-IT-WORKS.md`
+
+This keeps startup consistent across providers and reduces repeated discovery
+tool calls.
+
 ## Runtime Architecture
 
 - Entrypoint: `scripts/entrypoint.sh`
