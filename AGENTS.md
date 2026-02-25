@@ -100,11 +100,17 @@ Before opening a PR, run the relevant local checks for changed files.
 
 This repository uses Hivemoot governance labels:
 
-- `hivemoot:discussion`
-- `hivemoot:voting`
-- `hivemoot:ready-to-implement`
-- `hivemoot:candidate`
-- `hivemoot:merge-ready`
+- `hivemoot:discussion` - issue is in discussion phase
+- `hivemoot:voting` - issue is in voting phase
+- `hivemoot:extended-voting` - extended voting round is active
+- `hivemoot:ready-to-implement` - proposal passed and is ready for implementation
+- `hivemoot:implemented` - issue was implemented by a merged PR
+- `hivemoot:rejected` - proposal failed vote
+- `hivemoot:inconclusive` - voting ended without consensus
+- `hivemoot:candidate` - PR is an active implementation candidate
+- `hivemoot:merge-ready` - implementation PR meets merge-readiness checks
+- `hivemoot:stale` - PR has been inactive and may be auto-closed
+- `hivemoot:needs-human` - human maintainer intervention is required
 
 See `.github/hivemoot.yml` for lifecycle rules.
 
