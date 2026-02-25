@@ -1448,8 +1448,6 @@ mkdir -p "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root
 chmod 700 "$workspace_root" "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" 2>/dev/null || true
 rm -f "$shutdown_flag_file"
 
-stage_provider_secret_sources
-
 declare -A seen_agents=()
 declare -a agent_ids=()
 declare -a agent_tokens=()
@@ -1514,6 +1512,8 @@ done
 
 trap handle_shutdown TERM INT
 trap cleanup EXIT
+
+stage_provider_secret_sources
 
 agent_count="${#agent_ids[@]}"
 
