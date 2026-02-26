@@ -187,14 +187,34 @@ _send_health_report() {
     local curl_args=(-s -o /dev/null -w '%{http_code}' --max-time "$timeout")
     curl_args+=(-X POST -H 'Content-Type: application/json')
 
-    # Auth header — token read from file, same pattern as codebase (run-loop.sh)
+    # Auth header: stage into a temporary file and pass by reference so the
+    # token does not appear in process argv.
+    local auth_header_file=""
     if [ -n "$token_file" ] && [ -f "$token_file" ]; then
-      curl_args+=(-H "Authorization: Bearer $(cat "$token_file")")
+      local token_value=""
+      if ! token_value="$(tr -d '\r\n' < "$token_file")"; then
+        echo "health-report: failed to read token file: ${token_file}" >&2
+        return 1
+      fi
+      auth_header_file="$(mktemp)"
+      if [ -z "$auth_header_file" ]; then
+        echo "health-report: failed to create temporary auth header file" >&2
+        return 1
+      fi
+      if ! printf 'Authorization: Bearer %s\n' "$token_value" > "$auth_header_file"; then
+        rm -f "$auth_header_file"
+        echo "health-report: failed to stage auth header" >&2
+        return 1
+      fi
+      chmod 600 "$auth_header_file" 2>/dev/null || true
+      curl_args+=(-H "@${auth_header_file}")
     fi
 
     curl_args+=(-d "$payload" "$url")
-
     http_code="$(curl "${curl_args[@]}")" || curl_exit=$?
+    if [ -n "$auth_header_file" ]; then
+      rm -f "$auth_header_file"
+    fi
 
     # Network error: curl exits non-zero with http_code empty or "000"
     # (connection refused, DNS failure, timeout before response, etc.)
