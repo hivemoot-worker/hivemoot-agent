@@ -425,6 +425,7 @@ test_token_not_exposed_in_curl_argv() {
   cat > "${mock_dir}/curl" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$(dirname "$0")/curl-args"
+cat > "$(dirname "$0")/curl-stdin"
 echo "200"
 MOCK
   chmod +x "${mock_dir}/curl"
@@ -450,12 +451,14 @@ MOCK
     fail "token value leaked into curl argv"
   fi
 
-  local header_ref
-  header_ref="$(grep -E '^@.+' "$args_file" | head -n 1 || true)"
-  [ -n "$header_ref" ] || fail "expected curl argv to include @header-file reference"
-  local header_path="${header_ref#@}"
-  [ ! -e "$header_path" ] || fail "temporary auth header file should be cleaned up"
-  pass "token is not exposed in curl argv"
+  grep -Fxq '@-' "$args_file" || fail "expected curl argv to include '@-' header-stdin reference"
+
+  local stdin_file="${mock_dir}/curl-stdin"
+  [ -f "$stdin_file" ] || fail "mock curl did not capture stdin"
+  local stdin_line
+  stdin_line="$(cat "$stdin_file")"
+  [ "$stdin_line" = "Authorization: Bearer ${token_value}" ] || fail "expected auth header on stdin"
+  pass "token is passed via stdin and not exposed in curl argv"
 }
 
 test_response_400() {
