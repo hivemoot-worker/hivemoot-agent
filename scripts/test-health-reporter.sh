@@ -14,12 +14,16 @@ setup() {
 }
 
 teardown() {
-  rm -rf "$TEST_TMP"
+  local rc=$?
+  if [ -n "${TEST_TMP:-}" ]; then
+    rm -rf "$TEST_TMP"
+    TEST_TMP=""
+  fi
+  return "$rc"
 }
 
 fail() {
   echo "FAIL: $*" >&2
-  teardown
   exit 1
 }
 
@@ -673,6 +677,7 @@ echo "Running health reporter tests"
 echo ""
 
 setup
+trap teardown EXIT
 
 echo "  update_agent_stats:"
 run_test test_stats_creates_new_file
