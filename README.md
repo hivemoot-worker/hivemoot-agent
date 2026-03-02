@@ -582,6 +582,18 @@ OPENROUTER_API_KEY_FILE=/run/secrets/openrouter_api_key
 - Default `api_key` runs keep provider credential homes on `tmpfs` (RAM-backed).
 - In local subscription override mode, treat provider volumes and `./data/homes/<agent-id>` as sensitive credential state.
 
+### Provider Tool Restriction Posture (Current `main`)
+
+| Provider | Current CLI posture | Effective runtime boundary | Pending improvement |
+| --- | --- | --- | --- |
+| Claude | `--dangerously-skip-permissions` (no active deny-tool flag in `main`) | Container isolation plus your mounted workspace | `--disallowedTools` hardening in [#223](https://github.com/hivemoot/hivemoot-agent/pull/223) |
+| Codex | `--dangerously-bypass-approvals-and-sandbox` (no active Codex sandbox flag in `main`) | Container isolation plus your mounted workspace | `--full-auto` workspace-write path in [#224](https://github.com/hivemoot/hivemoot-agent/pull/224) |
+| Gemini | `--yolo` (no deny-list or env-filtering option exposed by Gemini CLI) | Container isolation plus your mounted workspace | Upstream Gemini CLI does not currently expose a deny-tool/sandbox equivalent |
+| Kilo | `kilo run --auto` (no provider-level deny list configured by this runtime) | Container isolation plus your mounted workspace | Depends on upstream/provider-specific capability support |
+| OpenCode | `opencode run` (no provider-level deny list configured by this runtime) | Container isolation plus your mounted workspace | Depends on upstream/provider-specific capability support |
+
+When running Gemini against untrusted repositories, treat the container boundary as the primary runtime defense. Add external controls (for example, network egress restrictions and tightly scoped credentials) if exfiltration risk is a concern.
+
 ## Troubleshooting
 
 | Error | Fix |
