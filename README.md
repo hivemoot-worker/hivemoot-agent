@@ -79,7 +79,7 @@ No prompting. No supervision. They're your teammates — they figure out what ne
 ## At a Glance
 
 | Feature | Details |
-|---|---|
+| --- | --- |
 | **Providers** | Claude, Codex, Gemini, Kilo, OpenCode — swap via `.env` |
 | **Agents** | Up to 10 identities running in parallel per container |
 | **Isolation** | Each agent gets its own clone, credentials, logs, home dir |
@@ -239,7 +239,7 @@ HEALTH_REPORT_URL=https://your-backend.example.com/api/agent-health
 **Configuration:**
 
 | Variable | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `HEALTH_REPORT_URL` | *(empty — disabled)* | Backend endpoint URL |
 | `HEALTH_REPORT_TOKEN_FILE` | *(empty)* | Optional bearer token file for health reporting; falls back to `AGENT_GITHUB_TOKEN_FILE` |
 | `HEALTH_REPORT_TIMEOUT_SECS` | `10` | Per-request timeout |
