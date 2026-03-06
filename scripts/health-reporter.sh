@@ -148,11 +148,11 @@ _validate_health_payload() {
 }
 
 # Send health report with retry logic for 5xx/network errors.
-# Args: url, payload, token_file
+# Args: url, payload, token (raw token or token file path)
 _send_health_report() {
   local url="$1"
   local payload="$2"
-  local token_file="$3"
+  local token_input="${3:-}"
   local max_retries="${HEALTH_REPORT_MAX_RETRIES}"
   local timeout="${HEALTH_REPORT_TIMEOUT_SECS}"
   local attempt=0
@@ -165,14 +165,30 @@ _send_health_report() {
     local curl_args=(-s -o /dev/null -w '%{http_code}' --max-time "$timeout")
     curl_args+=(-X POST -H 'Content-Type: application/json')
 
-    # Auth header — token read from file, same pattern as codebase (run-loop.sh)
-    if [ -n "$token_file" ] && [ -f "$token_file" ]; then
-      curl_args+=(-H "Authorization: Bearer $(cat "$token_file")")
+    # Auth header: pass via stdin (`-H @-`) so the token never appears in
+    # process argv and does not need to be staged in a temporary file.
+    local use_auth_header_stdin=0
+    local token_value=""
+    if [ -n "$token_input" ]; then
+      if [ -f "$token_input" ]; then
+        if ! token_value="$(tr -d '\r\n' < "$token_input")"; then
+          echo "health-report: failed to read token file: ${token_input}" >&2
+          return 1
+        fi
+      else
+        token_value="$token_input"
+      fi
+    fi
+    if [ -n "$token_value" ]; then
+      use_auth_header_stdin=1
     fi
 
     curl_args+=(-d "$payload" "$url")
-
-    http_code="$(curl "${curl_args[@]}")" || curl_exit=$?
+    if [ "$use_auth_header_stdin" -eq 1 ]; then
+      http_code="$(printf 'Authorization: Bearer %s\n' "$token_value" | curl "${curl_args[@]}" -H @-)" || curl_exit=$?
+    else
+      http_code="$(curl "${curl_args[@]}")" || curl_exit=$?
+    fi
 
     # Network error: curl exits non-zero with http_code empty or "000"
     # (connection refused, DNS failure, timeout before response, etc.)
@@ -255,7 +271,7 @@ _sleep_with_jitter() {
 # Args:
 #   agent_id             — agent identifier (e.g. "forager")
 #   repo                 — current repo in owner/repo format
-#   token_file           — path to bearer token file (may be empty)
+#   token                — bearer token (may be empty)
 #   run_id               — unique run identifier for idempotency
 #   outcome              — "success" | "failure" | "timeout"
 #   duration_secs        — run duration in seconds
@@ -266,7 +282,7 @@ _sleep_with_jitter() {
 report_health_to_backend() {
   local agent_id="$1"
   local repo="$2"
-  local token_file="${3:-}"
+  local token="${3:-}"
   local run_id="$4"
   local outcome="$5"
   local duration_secs="$6"
@@ -306,5 +322,5 @@ report_health_to_backend() {
     return 1
   fi
 
-  _send_health_report "$HEALTH_REPORT_URL" "$payload" "$token_file"
+  _send_health_report "$HEALTH_REPORT_URL" "$payload" "$token"
 }

@@ -96,48 +96,7 @@ shuffle_agents() {
 declare -A seen_agents=()
 declare -a agent_ids=()
 declare -a agent_tokens=()
-
-for slot in $(seq 1 "$max_agents"); do
-  suffix="$(printf '%02d' "$slot")"
-  id_var="AGENT_ID_${suffix}"
-  token_var="AGENT_GITHUB_TOKEN_${suffix}"
-  token_file_var="${token_var}_FILE"
-
-  agent_id="$(trim "${!id_var:-}")"
-  token_inline="${!token_var:-}"
-  token_file="${!token_file_var:-}"
-
-  if [ -z "$agent_id" ] && [ -z "$token_inline" ] && [ -z "$token_file" ]; then
-    continue
-  fi
-
-  if [ -z "$agent_id" ]; then
-    echo "${id_var} is required when ${token_var} or ${token_file_var} is set." >&2
-    exit 1
-  fi
-
-  agent_token="$(load_slot_token "$suffix")"
-  if [ -z "$agent_token" ]; then
-    echo "Missing token for slot ${suffix}. Set ${token_var} or ${token_file_var}." >&2
-    exit 1
-  fi
-
-  validate_agent_id "$agent_id"
-
-  if [ -n "${seen_agents[$agent_id]:-}" ]; then
-    echo "Duplicate agent id detected: ${agent_id}" >&2
-    exit 1
-  fi
-  seen_agents["$agent_id"]=1
-
-  agent_ids+=("$agent_id")
-  agent_tokens+=("$agent_token")
-done
-
-if [ "${#agent_ids[@]}" -eq 0 ]; then
-  echo "No agents configured. Set AGENT_ID_01 + AGENT_GITHUB_TOKEN_01 (up to _10)." >&2
-  exit 1
-fi
+load_agent_slots "$max_agents"
 
 mkdir -p "$token_tmp_root"
 chmod 700 "$token_tmp_root" 2>/dev/null || true
@@ -157,7 +116,7 @@ log "Randomized launch order: ${agent_ids[*]}"
 preflight_check() {
   local provider="${AGENT_PROVIDER:-claude}"
   local auth_mode="${AGENT_AUTH_MODE:-auto}"
-  local prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/default.md}"
+  local prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/system/autonomous.md}"
   local failures=0
 
   log "Pre-flight: validating configuration"
@@ -168,10 +127,31 @@ preflight_check() {
     failures=$((failures + 1))
   fi
 
-  # Prompt file exists
   if [ ! -f "$prompt_file" ]; then
     echo "Pre-flight: prompt file not found: ${prompt_file}" >&2
     failures=$((failures + 1))
+  else
+    # Built-in prompts require the shared base prompt; standalone custom
+    # prompts remain valid without a sibling base.md.
+    if ! resolve_companion_base_prompt "$prompt_file" >/dev/null; then
+      if prompt_requires_companion_base "$prompt_file"; then
+        echo "Pre-flight: base prompt file not found: $(dirname "$prompt_file")/base.md" >&2
+        failures=$((failures + 1))
+      fi
+    fi
+  fi
+
+  # Skill files exist
+  if [ -n "${AGENT_SKILLS:-}" ]; then
+    local skill_name
+    while IFS= read -r skill_name; do
+      skill_name="$(trim "$skill_name")"
+      [ -z "$skill_name" ] && continue
+      if [ ! -f "/opt/hivemoot-agent/skills/${skill_name}/SKILL.md" ]; then
+        echo "Pre-flight: skill file not found: /opt/hivemoot-agent/skills/${skill_name}/SKILL.md" >&2
+        failures=$((failures + 1))
+      fi
+    done < <(tr ',' '\n' <<< "${AGENT_SKILLS}")
   fi
 
   # Provider auth check

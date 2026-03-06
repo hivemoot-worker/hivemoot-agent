@@ -59,6 +59,12 @@ Full config examples:
 docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent
 ```
 
+> [!WARNING]
+> `hivemoot-agent` is not fully production-ready yet.
+> Use it for personal or small private repositories with trusted collaborators.
+> For production deployments, use the [Host Controller (Phase 2 MVP)](#host-controller-phase-2-mvp)
+> and apply additional hardening for credentials, runtime isolation, and permissions.
+
 ## What This Does
 
 You give it a GitHub repo. It spins up AI-powered agents that:
@@ -206,6 +212,37 @@ Requires `TARGET_REPO` and user tokens (not installation tokens). Additional set
 
 Both `codex` and `claude` providers support mention-triggered session resume. Each provider keeps one session per GitHub notification thread and resumes follow-up mentions with the saved session UUID. For Codex the UUID comes from `--json` output (`thread.started.thread_id`) and is resumed via `codex exec resume <SESSION_ID>`. For Claude the UUID is extracted from the stream-JSON `init` event (`session_id`) and resumed via `claude --resume <SESSION_ID>`. Session maps are persisted under each agent workspace (for example `/workspace/repo/agents/<agent-id>/sessions/<provider>/tool-session-map.tsv`), scoped by runtime settings (repo/provider/model/tool options + mention key) to avoid cross-config reuse. Periodic runs (no mention session key) always start fresh. Resume is strict: sessions reset when idle/age limits are exceeded (`SESSION_RESUME_MAX_IDLE_HOURS` / `SESSION_RESUME_MAX_AGE_HOURS`), and any failed resume is retried once as a fresh session.
 
+**Task mode** — claim one delegated task, execute it through the same `run-once`
+runtime path, report progress/result, then exit:
+
+```bash
+RUN_MODE=task docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent
+```
+
+Task mode is intentionally a thin wrapper over `run-once.sh`:
+- same provider/auth selection
+- same task prompt assembly path, using `prompts/system/task.md` by default or `AGENT_PROMPT_FILE` when explicitly overridden
+- same timeout enforcement (`AGENT_TIMEOUT_SECONDS`)
+- same repo clone/logging behavior
+- plus optional liveness heartbeats to keep backend task timeout aligned with active work
+
+Task mode supports two task sources:
+- **Claim flow** (recommended): set `AGENT_TASK_CLAIM_URL` and executor token
+  (`HIVEMOOT_AGENT_TOKEN` or `HIVEMOOT_AGENT_TOKEN_FILE`)
+- **Direct env injection**: set `AGENT_TASK_ID`, `AGENT_TASK_PROMPT`, and
+  `TARGET_REPO` to skip claim (plus `AGENT_TASK_CLAIM_TOKEN` when execute updates are enabled)
+
+Task and health auth share one runtime token variable (`HIVEMOOT_AGENT_TOKEN`),
+with optional file-based input via `HIVEMOOT_AGENT_TOKEN_FILE`.
+
+For backend updates:
+- `AGENT_TASK_EXECUTE_BASE_URL` posts to `${base}/${taskId}/execute`
+- `AGENT_TASK_CLAIM_TOKEN` is sent as `X-Task-Claim-Token` on execute updates
+- `AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS` sends `{"action":"heartbeat"}` at that cadence while task execution is running (`0` disables; default `45`)
+
+Task mode writes a local markdown artifact at
+`${WORKSPACE_ROOT}/task-output/<task_id>/result.md`.
+
 ## Health Reporting
 
 When `HEALTH_REPORT_URL` is set, the agent sends a terminal health report to the
@@ -219,8 +256,7 @@ agent status without requiring direct host or container access.
    with optional `exit_code` and `error`.
 2. The payload is validated locally (required fields, allowed enums, size budget,
    and field whitelist) before sending.
-3. Auth uses `HEALTH_REPORT_TOKEN_FILE` when set, and falls back to
-   `AGENT_GITHUB_TOKEN_FILE` when unset.
+3. Auth uses `HIVEMOOT_AGENT_TOKEN` (`HIVEMOOT_AGENT_TOKEN_FILE` also works).
 4. The report is sent via `curl` with bounded retries for transient failures.
 5. Reporting is best-effort and never affects the run exit code.
 
@@ -235,7 +271,8 @@ HEALTH_REPORT_URL=https://your-backend.example.com/api/agent-health
 | Variable | Default | Description |
 |---|---|---|
 | `HEALTH_REPORT_URL` | *(empty — disabled)* | Backend endpoint URL |
-| `HEALTH_REPORT_TOKEN_FILE` | *(empty)* | Optional bearer token file for health reporting; falls back to `AGENT_GITHUB_TOKEN_FILE` |
+| `HIVEMOOT_AGENT_TOKEN` | *(empty)* | Shared bearer token used by task mode and health reporting |
+| `HIVEMOOT_AGENT_TOKEN_FILE` | *(empty)* | Optional file path for `HIVEMOOT_AGENT_TOKEN` |
 | `HEALTH_REPORT_TIMEOUT_SECS` | `10` | Per-request timeout |
 | `HEALTH_REPORT_MAX_RETRIES` | `2` | Retry attempts for 5xx/network errors |
 
@@ -259,12 +296,13 @@ What it does:
 - Applies worker hardening flags (`--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only`, tmpfs mounts, resource limits).
 - Enforces per-repo mutual exclusion with `flock` plus a global max worker cap (locks default under `/tmp/hivemoot-controller-locks`).
 - Supports mention-triggered jobs (`WATCH_MENTIONS=1`) via a filesystem queue under `queue/` and per-agent watch state under `watch-state/`.
+- Supports delegated task watching (`WATCH_TASKS=1`) by polling `AGENT_TASK_CLAIM_URL` and spawning one-shot `RUN_MODE=task` workers with claimed `task_id/prompt/repo`.
 - Defers mention acknowledgment until the spawned worker job succeeds.
 - Writes per-job artifacts:
   - `jobs/<job-id>/job.json` (job spec)
   - `workspaces/<job-id>/.hivemoot/status` and `summary` (completion sentinel)
-- Requires Bash 4+ on the host (`declare -A` is used). macOS users should run a newer bash (for example Homebrew bash) explicitly.
-- Provider `*_FILE` values passed through the controller must be absolute host paths. The controller stages them once into `CONTROLLER_WORKSPACE_ROOT/controller-secrets/` so they survive host temp cleanup before per-job worker staging.
+- Requires Bash 4+ on the host (`declare -A` is used). If needed, install a newer Bash with your platform package manager and run the script explicitly with that binary (for example Homebrew Bash on macOS).
+- Provider `*_FILE` values passed through the controller must be absolute host paths. The controller stages provider secrets into `CONTROLLER_WORKSPACE_ROOT/controller-secrets/` so they survive host temp cleanup before per-job worker staging.
 
 Run one periodic cycle:
 
@@ -293,6 +331,30 @@ bash scripts/controller.sh
 ```
 
 In `CONTROLLER_RUN_MODE=once` with `WATCH_MENTIONS=1`, the controller performs one `hivemoot watch --once` poll per agent before exit.
+
+Run continuously with delegated task watching:
+
+```bash
+CONTROLLER_RUN_MODE=loop \
+WATCH_TASKS=1 \
+TASK_DISPATCH_AGENT_IDS=attendant \
+AGENT_TASK_CLAIM_URL=https://your-backend.example.com/api/tasks/claim \
+HIVEMOOT_AGENT_TOKEN_FILE=/run/secrets/hivemoot-agent-token \
+bash scripts/controller.sh
+```
+
+In task-watching mode, `TARGET_REPO` is optional because each claimed task
+already carries its target repo.
+The claim poll interval is configurable via `TASK_POLL_INTERVAL_SECS`
+(default: `120` seconds).
+`TASK_DISPATCH_AGENT_IDS` is required and must reference configured
+`AGENT_ID_XX` values; only those agents are allowed to execute claimed tasks.
+If you use Apiary's `apiary.agents.yaml` duties, set this list from agents with
+`duty: dispatch`.
+
+If the worker exits non-zero, the controller immediately POSTs `action=fail`
+to the execute endpoint as a safety net for cases where `run-task.sh` itself
+crashed before self-reporting (OOM, container crash).
 
 Important: this script is designed to run on the host with direct `docker` access. Do not run it from inside another container with a mounted `docker.sock`.
 
@@ -458,8 +520,9 @@ Override the built-in system prompt by setting `AGENT_PROMPT_FILE` in `.env`:
 AGENT_PROMPT_FILE=/opt/hivemoot-agent/prompts/custom.md
 ```
 
-The path must be absolute inside the container. To make a custom prompt available,
-mount it via a volume in `docker-compose.override.yml`:
+The path must be absolute inside the container.
+
+For a standalone full prompt file, mount that file in `docker-compose.override.yml`:
 
 ```yaml
 services:
@@ -468,10 +531,34 @@ services:
       - ./my-prompt.md:/opt/hivemoot-agent/prompts/custom.md:ro
 ```
 
-Custom prompts must preserve the non-overridable security guardrails from
-`prompts/default.md` (or an equivalent section with the same protections).
+For a mode-specific prompt with a sibling `base.md`, point `AGENT_PROMPT_FILE`
+at the mode-specific file and mount the containing directory (or both files):
 
-When unset, agents use the default prompt at `prompts/default.md`.
+```bash
+AGENT_PROMPT_FILE=/opt/hivemoot-agent/prompts/custom/task.md
+```
+
+```yaml
+services:
+  hivemoot-agent:
+    volumes:
+      - ./my-prompts:/opt/hivemoot-agent/prompts/custom:ro
+```
+
+Custom prompts can be either:
+- a standalone full system prompt file
+- a mode-specific prompt that sits beside a shared `base.md`
+
+Standalone custom prompts must preserve the non-overridable security guardrails
+from `prompts/system/base.md` (or an equivalent section with the same
+protections).
+
+`scripts/controller.sh` also supports the two-file layout and automatically
+mounts a sibling `base.md` when it exists next to the host `AGENT_PROMPT_FILE`.
+
+When unset, standing agents use `prompts/system/autonomous.md` (prepended by
+`prompts/system/base.md`) and task mode uses `prompts/system/task.md`
+(also prepended by `prompts/system/base.md`).
 
 ## Optional Override Services
 
@@ -586,7 +673,7 @@ OPENROUTER_API_KEY_FILE=/run/secrets/openrouter_api_key
 | Subscription auth errors | Use `docker-compose.subscription.local.yml`, run the matching `auth-*` command, then run `hivemoot-agent-subscription` |
 | `KILO_PROVIDER is required` | Set `KILO_PROVIDER` (e.g. `openrouter`) or `KILOCODE_TOKEN` |
 | Kilo permission prompts in `--auto` mode | The `--auto` flag should bypass all prompts; check Kilo CLI version (`kilo --version`) |
-| `health-report: authentication failed (401)` | Backend rejected the token — verify `HEALTH_REPORT_TOKEN_FILE` (or fallback `AGENT_GITHUB_TOKEN_FILE`) and backend access |
+| `health-report: authentication failed (401)` | Backend rejected the token — verify `HIVEMOOT_AGENT_TOKEN`/`HIVEMOOT_AGENT_TOKEN_FILE` and backend access |
 | `health-report: rate limited (429)` | Backend rate limit hit — reduce run frequency or check `HEALTH_REPORT_URL` configuration |
 
 ## Related Repos
