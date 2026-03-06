@@ -278,6 +278,55 @@ test_empty_skill_list() {
   echo "  ✓ Empty skill list returns nothing"
 }
 
+test_generate_claude_plugin_dir_copy_failure() {
+  echo "Testing Claude plugin dir cleanup on copy failure..."
+
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  trap 'if [ -n "${tmp_dir:-}" ]; then rm -rf "$tmp_dir"; fi' EXIT
+
+  local skills_dir="${tmp_dir}/skills"
+  local mock_bin="${tmp_dir}/mock-bin"
+  local expected_plugin_dir="${tmp_dir}/plugin-dir"
+  mkdir -p "$mock_bin"
+
+  cat > "${mock_bin}/mktemp" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-d" ]; then
+  mkdir -p "$MOCK_PLUGIN_DIR"
+  printf '%s\n' "$MOCK_PLUGIN_DIR"
+  exit 0
+fi
+/usr/bin/mktemp "$@"
+EOF
+  chmod +x "${mock_bin}/mktemp"
+
+  setup_test_skills "$skills_dir"
+  source_lib
+
+  export MOCK_PLUGIN_DIR="$expected_plugin_dir"
+  PATH="${mock_bin}:$PATH"
+
+  cp() {
+    return 1
+  }
+
+  local output=""
+  if output="$(generate_claude_plugin_dir "skill-one" "$skills_dir" 2>/dev/null)"; then
+    fail "generate_claude_plugin_dir should fail when copy fails"
+  fi
+
+  if [ -n "$output" ]; then
+    fail "generate_claude_plugin_dir should not emit a plugin dir on failure"
+  fi
+
+  if [ -e "$expected_plugin_dir" ]; then
+    fail "generate_claude_plugin_dir should clean up failed temp dirs"
+  fi
+
+  echo "  ✓ Claude plugin dir generation fails closed on copy errors"
+}
+
 test_shipped_skills_load() {
   echo "Testing shipped skill files load correctly..."
 
@@ -353,6 +402,7 @@ test_load_multiple_skills
 test_invalid_skill_name
 test_missing_skill_file
 test_empty_skill_list
+test_generate_claude_plugin_dir_copy_failure
 test_shipped_skills_load
 
 echo
