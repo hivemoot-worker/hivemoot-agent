@@ -495,7 +495,7 @@ fi
 # All other providers use V1 prompt-append here.
 if [ -n "$agent_skills" ] && [ "$provider" != "claude" ]; then
   skills_content=""
-  if ! skills_content="$(load_skill_prompts "$agent_skills" "/opt/hivemoot-agent/prompts/skills")"; then
+  if ! skills_content="$(load_skill_prompts "$agent_skills" "/opt/hivemoot-agent/skills")"; then
     exit 1
   fi
   if [ -n "$skills_content" ]; then
@@ -858,7 +858,7 @@ You are resuming a prior session for this mention thread. Some data in your cont
     claude_plugin_dir=""
     if [ -n "$agent_skills" ]; then
       if claude --help 2>&1 | grep -q -- '--plugin-dir'; then
-        if ! claude_plugin_dir="$(generate_claude_plugin_dir "$agent_skills" "/opt/hivemoot-agent/prompts/skills")"; then
+        if ! claude_plugin_dir="$(generate_claude_plugin_dir "$agent_skills" "/opt/hivemoot-agent/skills")"; then
           exit 1
         fi
         _cleanup_dirs+=("$claude_plugin_dir")
@@ -866,7 +866,7 @@ You are resuming a prior session for this mention thread. Some data in your cont
       else
         log "Claude skills: --plugin-dir unavailable (requires 2.1.63+); using prompt-append"
         skills_content=""
-        if ! skills_content="$(load_skill_prompts "$agent_skills" "/opt/hivemoot-agent/prompts/skills")"; then
+        if ! skills_content="$(load_skill_prompts "$agent_skills" "/opt/hivemoot-agent/skills")"; then
           exit 1
         fi
         if [ -n "$skills_content" ]; then
