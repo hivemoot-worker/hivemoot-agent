@@ -1,7 +1,7 @@
 ---
 name: security-reviewer
 description: Security-focused review lens for PRs, code, and issues
-disallowed-tools:
+disallowedTools:
   - Write
   - Edit
   - NotebookEdit
