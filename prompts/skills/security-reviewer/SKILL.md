@@ -1,6 +1,10 @@
 ---
 name: security-reviewer
 description: Security-focused review lens for PRs, code, and issues
+disallowed-tools:
+  - Write
+  - Edit
+  - NotebookEdit
 ---
 ## Skill: Security Reviewer
 
