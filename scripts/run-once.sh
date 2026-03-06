@@ -100,6 +100,8 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "${SCRIPT_DIR}/lib.sh"
+# shellcheck source=scripts/lib-observability.sh
+. "${SCRIPT_DIR}/lib-observability.sh"
 
 load_secret_from_file AGENT_GITHUB_TOKEN
 load_secret_from_file HIVEMOOT_AGENT_TOKEN
@@ -500,7 +502,10 @@ if [ -n "$agent_skills" ] && [ "$provider" != "claude" ]; then
   fi
   if [ -n "$skills_content" ]; then
     system_prompt="${system_prompt}
-${skills_content}"
+
+<skills>
+${skills_content}
+</skills>"
   fi
 fi
 
@@ -1201,6 +1206,11 @@ if [ -n "${HEALTH_REPORT_URL:-}" ]; then
 
   # Compute next_run_at when running on a periodic schedule.
   # PERIODIC_INTERVAL_SECS is exported by run-loop.sh; unset for standalone/mention runs.
+  # This is a nominal floor (now + interval), not a hard guarantee. On failure,
+  # run-loop.sh applies exponential backoff that can defer the actual next run
+  # beyond this timestamp. Dashboards should treat this as best-effort and avoid
+  # tight "overdue" thresholds — a run landing later than next_run_at is not
+  # necessarily late, especially when PERIODIC_INTERVAL_SECS < backoff minimums.
   _next_run_at=""
   if [ -n "${PERIODIC_INTERVAL_SECS:-}" ] && printf '%s' "$PERIODIC_INTERVAL_SECS" | grep -Eq '^[1-9][0-9]*$'; then
     _next_run_at="$(date -u -d "+${PERIODIC_INTERVAL_SECS} seconds" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
