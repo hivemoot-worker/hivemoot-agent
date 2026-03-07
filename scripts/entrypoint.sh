@@ -9,18 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "${SCRIPT_DIR}/lib.sh"
 
-for secret_var in \
-  OPENAI_API_KEY \
-  GOOGLE_API_KEY \
-  GEMINI_API_KEY \
-  ANTHROPIC_API_KEY \
-  OPENROUTER_API_KEY \
-  CLAUDE_CODE_OAUTH_TOKEN \
-  KILOCODE_TOKEN \
-  ZAI_API_KEY
-do
-  load_secret_from_file "$secret_var"
-done
+load_provider_secrets
 
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
   mkdir -p "${HOME}/.claude"
@@ -36,6 +25,15 @@ JSON
   chmod 600 "${HOME}/.claude.json"
 fi
 
+docker_provider="${DOCKER_PROVIDER:-all}"
+agent_provider="${AGENT_PROVIDER:-claude}"
+if [ "$docker_provider" != "all" ] && [ "$docker_provider" != "$agent_provider" ]; then
+  echo "Provider mismatch: image built for '${docker_provider}' but AGENT_PROVIDER='${agent_provider}'." >&2
+  echo "  Use baked provider: set AGENT_PROVIDER=${docker_provider} in .env" >&2
+  echo "  Switch providers:   PROVIDER=${agent_provider} docker compose build hivemoot-agent" >&2
+  exit 1
+fi
+
 mode="${RUN_MODE:-once}"
 case "$mode" in
   once)
@@ -46,8 +44,12 @@ case "$mode" in
     log "Running loop mode"
     exec /opt/hivemoot-agent/scripts/run-loop.sh
     ;;
+  task)
+    log "Running task mode"
+    exec /opt/hivemoot-agent/scripts/run-task.sh
+    ;;
   *)
-    echo "Invalid RUN_MODE: ${mode}. Expected: once|loop" >&2
+    echo "Invalid RUN_MODE: ${mode}. Expected: once|loop|task" >&2
     exit 1
     ;;
 esac

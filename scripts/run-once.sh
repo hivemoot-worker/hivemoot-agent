@@ -96,20 +96,12 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "${SCRIPT_DIR}/lib.sh"
+# shellcheck source=scripts/lib-observability.sh
+. "${SCRIPT_DIR}/lib-observability.sh"
 
-for secret_var in \
-  AGENT_GITHUB_TOKEN \
-  OPENAI_API_KEY \
-  GOOGLE_API_KEY \
-  GEMINI_API_KEY \
-  ANTHROPIC_API_KEY \
-  OPENROUTER_API_KEY \
-  CLAUDE_CODE_OAUTH_TOKEN \
-  KILOCODE_TOKEN \
-  ZAI_API_KEY
-do
-  load_secret_from_file "$secret_var"
-done
+load_secret_from_file AGENT_GITHUB_TOKEN
+load_secret_from_file HIVEMOOT_AGENT_TOKEN
+load_provider_secrets
 
 # shellcheck source=scripts/opencode-helpers.sh
 . "${SCRIPT_DIR}/opencode-helpers.sh"
@@ -270,7 +262,8 @@ hivemoot_buzz_role="${HIVEMOOT_BUZZ_ROLE:-}"
 target_repo="${TARGET_REPO:-}"
 workspace_root="${WORKSPACE_ROOT:-/workspace}"
 clone_depth="${GIT_CLONE_DEPTH:-50}"
-prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/default.md}"
+prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/system/autonomous.md}"
+agent_skills="${AGENT_SKILLS:-}"
 extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 agent_model="${AGENT_MODEL:-}"
 agent_tool_options_json="${AGENT_TOOL_OPTIONS_JSON:-"{}"}"
@@ -345,7 +338,7 @@ else
   job_home=""
 fi
 
-codex_resume_key="$(build_scoped_session_key "$agent_session_key" "$target_repo" "$provider" "$agent_model" "$agent_tool_options_json")"
+session_resume_key="$(build_scoped_session_key "$agent_session_key" "$target_repo" "$provider" "$agent_model" "$agent_tool_options_json")"
 provider_session_map_dir="${workspace_root}/sessions/${provider}"
 provider_session_map_file="${provider_session_map_dir}/tool-session-map.tsv"
 
@@ -411,60 +404,11 @@ if [ -n "$job_home" ]; then
   chmod 700 "$job_home" "$job_home/.config" "$job_home/.cache" \
     "$job_home/.local" "$job_home/.local/share" 2>/dev/null || true
 
-  # Selective auth seeding: copy ONLY credential files, skip session state.
-  # Claude Code: auth tokens live in ~/.config/claude/
-  if [ -d "${HOME}/.config/claude" ]; then
-    mkdir -p "$job_home/.config/claude"
-    cp -R "${HOME}/.config/claude"/. "$job_home/.config/claude"/
-  fi
-  # Claude Code: ~/.claude/ contains both auth and session state.
-  # Seed only the OAuth credential file; skip auto-memory and projects/.
-  if [ -f "${HOME}/.claude/.credentials.json" ]; then
-    mkdir -p "$job_home/.claude"
-    cp "${HOME}/.claude/.credentials.json" "$job_home/.claude/.credentials.json"
-  fi
-  if [ -f "${HOME}/.claude.json" ]; then
-    cp "${HOME}/.claude.json" "$job_home/.claude.json"
-  fi
+  # Seed only auth credentials into the isolated job home; skip session
+  # state (conversation caches, memory, etc.).
+  seed_provider_auth "$job_home" "$HOME"
 
-  # Codex: auth.json is the credential file
-  if [ -f "${HOME}/.codex/auth.json" ]; then
-    mkdir -p "$job_home/.codex"
-    cp "${HOME}/.codex/auth.json" "$job_home/.codex/auth.json"
-  fi
-  # Codex: skip ~/.codex/conversations/, ~/.codex/cache/
-
-  # Gemini: seed only known auth/credential files; skip session state
-  # (memory.md, settings.json, state.json, telemetry, etc.)
-  if [ -d "${HOME}/.gemini" ]; then
-    mkdir -p "$job_home/.gemini"
-    for f in oauth_creds.json google_accounts.json mcp-oauth-tokens.json mcp-oauth-tokens-v2.json .env; do
-      if [ -f "${HOME}/.gemini/$f" ]; then
-        cp "${HOME}/.gemini/$f" "$job_home/.gemini/$f"
-      fi
-    done
-  fi
-
-  # Kilo: seed config (provider auth, permissions) from ~/.config/kilo/
-  if [ -d "${HOME}/.config/kilo" ]; then
-    mkdir -p "$job_home/.config/kilo"
-    cp -R "${HOME}/.config/kilo"/. "$job_home/.config/kilo"/
-  fi
-
-  # OpenCode: seed config from ~/.config/opencode/
-  if [ -d "${HOME}/.config/opencode" ]; then
-    mkdir -p "$job_home/.config/opencode"
-    cp -R "${HOME}/.config/opencode"/. "$job_home/.config/opencode"/
-  fi
-  if [ -f "${HOME}/.local/share/opencode/auth.json" ]; then
-    mkdir -p "$job_home/.local/share/opencode"
-    cp "${HOME}/.local/share/opencode/auth.json" "$job_home/.local/share/opencode/auth.json"
-  fi
-
-  # OpenCode: auto-generate config and auth.json if missing
-  generate_opencode_config "$job_home"
-
-  # Carry forward .profile so agent subprocesses find npm binaries
+  # Carry forward .profile so agent subprocesses find npm binaries.
   if [ -f "${HOME}/.profile" ]; then
     cp "${HOME}/.profile" "$job_home/.profile"
   fi
@@ -504,10 +448,23 @@ if [ ! -f "$prompt_file" ]; then
   exit 1
 fi
 
-# Build system instructions (base prompt + role) separately from task context
-# (extra_prompt). Claude uses --append-system-prompt for the former and the
-# user message for the latter; other providers concatenate everything.
+base_prompt_file=""
+if base_prompt_file="$(resolve_companion_base_prompt "$prompt_file")"; then
+  :
+elif prompt_requires_companion_base "$prompt_file"; then
+  echo "Base prompt file not found: $(dirname "$prompt_file")/base.md" >&2
+  exit 1
+fi
+
+# Build system instructions separately from task context (extra_prompt). When
+# a companion base prompt exists, prepend it to the mode-specific prompt;
+# standalone custom prompts continue to work as a complete system prompt.
 system_prompt="$(cat "$prompt_file")"
+if [ -n "$base_prompt_file" ]; then
+  system_prompt="$(cat "$base_prompt_file")
+
+$(cat "$prompt_file")"
+fi
 if [ -n "$hivemoot_buzz_role" ]; then
   role_prompt_block=""
   if ! role_prompt_block="$(resolve_role_prompt_block "$hivemoot_buzz_role" "$target_repo")"; then
@@ -529,6 +486,21 @@ else
 Target repository: ${target_repo}
 Local repository path: ${repo_dir}
 "
+fi
+
+# Skill modules: capability blocks appended after the role context.
+if [ -n "$agent_skills" ]; then
+  skills_content=""
+  if ! skills_content="$(load_skill_prompts "$agent_skills" "/opt/hivemoot-agent/skills")"; then
+    exit 1
+  fi
+  if [ -n "$skills_content" ]; then
+    system_prompt="${system_prompt}
+
+<skills>
+${skills_content}
+</skills>"
+  fi
 fi
 
 # Technical notes block: runtime details agents should be aware of.
@@ -658,6 +630,10 @@ clone_repo
 safe_agent_name="$(printf '%s' "$agent_name" | tr -c '[:alnum:]._-' '_')"
 run_id="$(date '+%Y%m%d-%H%M%S')-${provider}-${safe_agent_name}"
 log_file="${log_dir}/${run_id}.log"
+events_file="${log_dir}/${run_id}.events.jsonl"
+health_file="${log_dir}/health.json"
+_event_seq=0
+run_start_epoch="$(date +%s)"
 
 cmd=()
 run_in_repo=0
@@ -737,9 +713,18 @@ case "$provider" in
       codex_cmd_common+=(--config "model_reasoning_effort=\"${codex_reasoning_effort}\"")
       log "Codex reasoning effort: ${codex_reasoning_effort}"
     fi
+    # In task mode, request a native answer sidecar via --output-last-message.
+    # run-task.sh sets CODEX_ANSWER_FILE to the expected path before invoking
+    # this script. The sidecar is written atomically at turn end and is more
+    # reliable than JSONL log parsing.
+    if [ -n "${CODEX_ANSWER_FILE:-}" ]; then
+      mkdir -p "$(dirname "$CODEX_ANSWER_FILE")"
+      codex_cmd_common+=(--output-last-message "$CODEX_ANSWER_FILE")
+      log "Codex output-last-message: ${CODEX_ANSWER_FILE}"
+    fi
     codex_fresh_cmd=(codex exec "${codex_cmd_common[@]}" "$prompt")
 
-    if [ "$session_resume" = "1" ] && [ -n "$codex_resume_key" ]; then
+    if [ "$session_resume" = "1" ] && [ -n "$session_resume_key" ]; then
       # Probe resume support defensively: some CLI builds may expose
       # `resume` but handle `resume --help` inconsistently.
       if codex exec resume --help >/dev/null 2>&1 \
@@ -748,13 +733,13 @@ case "$provider" in
       else
         log "Codex resume unavailable; starting fresh session for key=${agent_session_key}"
       fi
-    elif [ "$session_resume" = "0" ] && [ -n "$codex_resume_key" ]; then
+    elif [ "$session_resume" = "0" ] && [ -n "$session_resume_key" ]; then
       log "Codex session resume disabled (SESSION_RESUME=0); starting fresh session for key=${agent_session_key}"
     fi
 
     codex_resume_now_epoch="$(date +%s)"
     if [ "$codex_resume_supported" -eq 1 ]; then
-      codex_session_record="$(load_session_record_for_key "$provider_session_map_file" "$codex_resume_key")"
+      codex_session_record="$(load_session_record_for_key "$provider_session_map_file" "$session_resume_key")"
       if [ -n "$codex_session_record" ]; then
         IFS=$'\t' read -r codex_record_session_id codex_record_created_epoch codex_record_last_used_epoch <<< "$codex_session_record"
       else
@@ -785,7 +770,7 @@ case "$provider" in
 You are resuming a prior session for this mention thread. Some data in your context may be stale — refresh the relevant information before acting."
       cmd=(codex exec resume "${codex_cmd_common[@]}" "$codex_active_session_id" "$prompt")
     else
-      if [ -n "$codex_resume_key" ] && [ "$codex_resume_supported" -eq 1 ]; then
+      if [ -n "$session_resume_key" ] && [ "$codex_resume_supported" -eq 1 ]; then
         log "Codex session resume: no saved session for key=${agent_session_key}; starting fresh"
       fi
       cmd=("${codex_fresh_cmd[@]}")
@@ -820,7 +805,14 @@ You are resuming a prior session for this mention thread. Some data in your cont
     fi
     log "Gemini auth mode resolved to: ${gemini_auth_mode}"
 
-    cmd=(gemini --yolo --output-format stream-json -p "$prompt")
+    # In task mode, use text output format so the log IS the answer text and
+    # no log parsing is required. Keep stream-json for non-task runs where
+    # structured events are useful for telemetry and session diagnostics.
+    if [ -n "${AGENT_TASK_ID:-}" ]; then
+      cmd=(gemini --yolo --output-format text -p "$prompt")
+    else
+      cmd=(gemini --yolo --output-format stream-json -p "$prompt")
+    fi
     if [ -n "$agent_model" ]; then
       cmd+=(-m "$agent_model")
     fi
@@ -859,27 +851,58 @@ You are resuming a prior session for this mention thread. Some data in your cont
     fi
     log "Claude auth mode resolved to: ${claude_auth_mode}"
 
-    claude_fresh_cmd=(claude -p --verbose --output-format stream-json --dangerously-skip-permissions)
+    # Deny rules are enforced even with --dangerously-skip-permissions;
+    # they block naive single-command exfiltration patterns from prompt injection.
+    # See issue #94 for analysis and rationale.
+    # Note: Bash(*) access means sufficiently creative shell invocations
+    # (e.g. bash -c 'env', python3 -c 'import os; print(os.environ)') cannot
+    # be blocked by deny lists alone — container isolation is the primary defense.
+    claude_disallowed_tools=(
+      "Bash(env)"
+      "Bash(env *)"
+      "Bash(printenv)"
+      "Bash(printenv *)"
+      "Bash(set)"
+      "Bash(set *)"
+      "Bash(export)"
+      "Bash(export *)"
+      "Bash(declare)"
+      "Bash(declare *)"
+      "Bash(cat /run/secrets/*)"
+      "Bash(* /run/secrets/*)"
+      "Read(/run/secrets/*)"
+    )
+
+    # In task mode, use text output format so the log IS the answer text.
+    # Remove --verbose to keep stdout clean (verbose lines would pollute the
+    # extracted result). Keep stream-json + verbose for non-task runs where
+    # structured events enable session resume and telemetry.
+    if [ -n "${AGENT_TASK_ID:-}" ]; then
+      claude_fresh_cmd=(claude -p --output-format text --dangerously-skip-permissions)
+    else
+      claude_fresh_cmd=(claude -p --verbose --output-format stream-json --dangerously-skip-permissions)
+    fi
+    claude_fresh_cmd+=(--disallowedTools "${claude_disallowed_tools[@]}")
     claude_fresh_cmd+=(--append-system-prompt "$system_prompt")
     if [ -n "$agent_model" ]; then
       claude_fresh_cmd+=(--model "$agent_model")
     fi
     claude_fresh_cmd+=("$user_message")
 
-    if [ "$session_resume" = "1" ] && [ -n "$codex_resume_key" ]; then
+    if [ "$session_resume" = "1" ] && [ -n "$session_resume_key" ]; then
       if claude -p --resume --help >/dev/null 2>&1 \
         || claude --help 2>&1 | grep -Eq '(^|[[:space:]])--resume([[:space:]]|$)'; then
         claude_resume_supported=1
       else
         log "Claude resume unavailable; starting fresh session for key=${agent_session_key}"
       fi
-    elif [ "$session_resume" = "0" ] && [ -n "$codex_resume_key" ]; then
+    elif [ "$session_resume" = "0" ] && [ -n "$session_resume_key" ]; then
       log "Claude session resume disabled (SESSION_RESUME=0); starting fresh session for key=${agent_session_key}"
     fi
 
     claude_resume_now_epoch="$(date +%s)"
     if [ "$claude_resume_supported" -eq 1 ]; then
-      claude_session_record="$(load_session_record_for_key "$provider_session_map_file" "$codex_resume_key")"
+      claude_session_record="$(load_session_record_for_key "$provider_session_map_file" "$session_resume_key")"
       if [ -n "$claude_session_record" ]; then
         IFS=$'\t' read -r claude_record_session_id claude_record_created_epoch claude_record_last_used_epoch <<< "$claude_session_record"
       else
@@ -908,14 +931,19 @@ You are resuming a prior session for this mention thread. Some data in your cont
       claude_resume_user_message="${user_message}
 
 You are resuming a prior session for this mention thread. Some data in your context may be stale — refresh the relevant information before acting."
-      cmd=(claude --resume "$claude_active_session_id" -p --verbose --output-format stream-json --dangerously-skip-permissions)
+      if [ -n "${AGENT_TASK_ID:-}" ]; then
+        cmd=(claude --resume "$claude_active_session_id" -p --output-format text --dangerously-skip-permissions)
+      else
+        cmd=(claude --resume "$claude_active_session_id" -p --verbose --output-format stream-json --dangerously-skip-permissions)
+      fi
+      cmd+=(--disallowedTools "${claude_disallowed_tools[@]}")
       cmd+=(--append-system-prompt "$system_prompt")
       if [ -n "$agent_model" ]; then
         cmd+=(--model "$agent_model")
       fi
       cmd+=("$claude_resume_user_message")
     else
-      if [ -n "$codex_resume_key" ] && [ "$claude_resume_supported" -eq 1 ]; then
+      if [ -n "$session_resume_key" ] && [ "$claude_resume_supported" -eq 1 ]; then
         log "Claude session resume: no saved session for key=${agent_session_key}; starting fresh"
       fi
       cmd=("${claude_fresh_cmd[@]}")
@@ -1061,6 +1089,8 @@ run_selected_command() {
 # Start with merged log sentinel; run_selected_command updates this to the
 # per-attempt file after each run.
 last_command_log="$log_file"
+_event_seq=$((_event_seq + 1))
+log_event "$events_file" run.start "$agent_name" "$run_id" "$_event_seq"
 run_selected_command
 
 # Strict policy: at most one resume failure before forcing fresh.
@@ -1082,7 +1112,7 @@ if [ "$provider" = "claude" ] && [ "$claude_used_resume" -eq 1 ] && [ "$exit_cod
   run_selected_command
 fi
 
-if [ "$provider" = "codex" ] && [ -n "$codex_resume_key" ] && [ "$exit_code" -eq 0 ]; then
+if [ "$provider" = "codex" ] && [ -n "$session_resume_key" ] && [ "$exit_code" -eq 0 ]; then
   codex_session_from_log="$(extract_codex_session_id_from_log "$last_command_log")"
   if is_valid_uuid "$codex_session_from_log"; then
     codex_saved_at_epoch="$(date +%s)"
@@ -1093,7 +1123,7 @@ if [ "$provider" = "codex" ] && [ -n "$codex_resume_key" ] && [ "$exit_code" -eq
       && is_non_negative_integer "$codex_active_session_created_epoch"; then
       codex_created_to_store="$codex_active_session_created_epoch"
     fi
-    save_session_record_for_key "$provider_session_map_file" "$codex_resume_key" \
+    save_session_record_for_key "$provider_session_map_file" "$session_resume_key" \
       "$codex_session_from_log" "$codex_created_to_store" "$codex_saved_at_epoch"
     log "Codex session saved: key=${agent_session_key} session=${codex_session_from_log}"
   else
@@ -1101,7 +1131,7 @@ if [ "$provider" = "codex" ] && [ -n "$codex_resume_key" ] && [ "$exit_code" -eq
   fi
 fi
 
-if [ "$provider" = "claude" ] && [ -n "$codex_resume_key" ] && [ "$exit_code" -eq 0 ]; then
+if [ "$provider" = "claude" ] && [ -n "$session_resume_key" ] && [ "$exit_code" -eq 0 ]; then
   claude_session_from_log="$(extract_claude_session_id_from_log "$last_command_log")"
   if is_valid_uuid "$claude_session_from_log"; then
     claude_saved_at_epoch="$(date +%s)"
@@ -1112,7 +1142,7 @@ if [ "$provider" = "claude" ] && [ -n "$codex_resume_key" ] && [ "$exit_code" -e
       && is_non_negative_integer "$claude_active_session_created_epoch"; then
       claude_created_to_store="$claude_active_session_created_epoch"
     fi
-    save_session_record_for_key "$provider_session_map_file" "$codex_resume_key" \
+    save_session_record_for_key "$provider_session_map_file" "$session_resume_key" \
       "$claude_session_from_log" "$claude_created_to_store" "$claude_saved_at_epoch"
     log "Claude session saved: key=${agent_session_key} session=${claude_session_from_log}"
   else
@@ -1122,6 +1152,64 @@ fi
 
 if [ "$exit_code" -eq 124 ]; then
   log "Run timed out after ${timeout_secs}s"
+fi
+
+run_end_epoch="$(date +%s)"
+run_duration_secs=$((run_end_epoch - run_start_epoch))
+_event_seq=$((_event_seq + 1))
+if [ "$exit_code" -eq 0 ]; then
+  log_event "$events_file" run.complete "$agent_name" "$run_id" "$_event_seq" \
+    "\"duration_secs\":${run_duration_secs},\"outcome\":\"success\""
+  write_health_snapshot "$health_file" "$agent_name" "$run_id" run.complete 0
+else
+  _run_error="run_failed"
+  if [ "$exit_code" -eq 124 ]; then
+    _run_error="timeout"
+  fi
+  _consecutive_failures="${AGENT_CONSECUTIVE_FAILURES:-0}"
+  log_event "$events_file" run.error "$agent_name" "$run_id" "$_event_seq" \
+    "\"error\":\"${_run_error}\",\"exit_code\":${exit_code},\"consecutive_failures\":${_consecutive_failures}"
+  write_health_snapshot "$health_file" "$agent_name" "$run_id" run.error "$_consecutive_failures"
+fi
+
+# ── V2 health reporting to backend ──────────────────────────────
+# Source the health reporter library (best-effort, never affects exit code).
+# shellcheck source=scripts/health-reporter.sh
+. "${SCRIPT_DIR}/health-reporter.sh"
+
+# Update persistent agent stats (atomic read-modify-write).
+stats_file="${log_dir}/agent-stats.json"
+_is_error=0
+[ "$exit_code" -ne 0 ] && _is_error=1
+update_agent_stats "$stats_file" "$_is_error" >/dev/null
+
+# Best-effort health report (never affects exit code).
+if [ -n "${HEALTH_REPORT_URL:-}" ]; then
+  _run_outcome="success"
+  if [ "$exit_code" -eq 124 ]; then
+    _run_outcome="timeout"
+  elif [ "$exit_code" -ne 0 ]; then
+    _run_outcome="failure"
+  fi
+
+  # Compute next_run_at when running on a periodic schedule.
+  # PERIODIC_INTERVAL_SECS is exported by run-loop.sh; unset for standalone/mention runs.
+  # This is a nominal floor (now + interval), not a hard guarantee. On failure,
+  # run-loop.sh applies exponential backoff that can defer the actual next run
+  # beyond this timestamp. Dashboards should treat this as best-effort and avoid
+  # tight "overdue" thresholds — a run landing later than next_run_at is not
+  # necessarily late, especially when PERIODIC_INTERVAL_SECS < backoff minimums.
+  _next_run_at=""
+  if [ -n "${PERIODIC_INTERVAL_SECS:-}" ] && printf '%s' "$PERIODIC_INTERVAL_SECS" | grep -Eq '^[1-9][0-9]*$'; then
+    _next_run_at="$(date -u -d "+${PERIODIC_INTERVAL_SECS} seconds" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+      || date -u -v "+${PERIODIC_INTERVAL_SECS}S" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+      || true)"
+  fi
+
+  report_health_to_backend \
+    "$agent_name" "$target_repo" "${HIVEMOOT_AGENT_TOKEN:-}" \
+    "$run_id" "$_run_outcome" "$run_duration_secs" "${_consecutive_failures:-0}" \
+    "$exit_code" "${_run_error:-}" "$_next_run_at" || true
 fi
 
 if [ -n "${last_command_log:-}" ] && [ "$last_command_log" != "$log_file" ] && [ -f "$last_command_log" ]; then

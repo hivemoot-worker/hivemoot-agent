@@ -38,8 +38,18 @@ jobs:
         run: bash scripts/test-prompt-guardrails.sh
       - name: Verify session resume lifecycle behavior
         run: bash scripts/test-session-resume-lifecycle.sh
+      - name: Verify provider mismatch detection behavior
+        run: bash scripts/test-provider-mismatch.sh
       - name: Verify controller behavior
         run: bash scripts/test-controller.sh
+      - name: Verify run-loop next_run_at propagation behavior
+        run: bash scripts/test-run-loop-next-run-at.sh
+      - name: Verify health reporting env wiring
+        run: bash scripts/test-health-report-env-wiring.sh
+      - name: Verify health reporter contract and behavior
+        run: bash scripts/test-health-reporter.sh
+      - name: Verify all test scripts have executable bit
+        run: bash scripts/test-script-executable-bits.sh
 
   hadolint:
     name: Hadolint
@@ -121,3 +131,38 @@ jobs:
           trivyignores: .trivyignore.empty
       - name: Check for stale Trivy suppressions
         run: scripts/check-trivyignore.sh .trivyignore trivy-report.json
+
+  docker-provider-stages:
+    name: Provider Stage Build (${{ matrix.provider }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - provider: codex
+            cli: codex
+          - provider: gemini
+            cli: gemini
+          - provider: kilo
+            cli: kilo
+          - provider: opencode
+            cli: opencode
+          - provider: claude
+            cli: claude
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build provider-${{ matrix.provider }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: hivemoot-agent:ci-${{ matrix.provider }}
+          build-args: PROVIDER=${{ matrix.provider }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Verify ${{ matrix.cli }} CLI is present
+        run: |
+          docker run --rm --entrypoint /bin/sh \
+            hivemoot-agent:ci-${{ matrix.provider }} \
+            -c 'command -v ${{ matrix.cli }}'

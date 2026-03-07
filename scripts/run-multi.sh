@@ -9,24 +9,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "${SCRIPT_DIR}/lib.sh"
 
-for secret_var in \
-  OPENAI_API_KEY \
-  GOOGLE_API_KEY \
-  GEMINI_API_KEY \
-  ANTHROPIC_API_KEY \
-  OPENROUTER_API_KEY \
-  CLAUDE_CODE_OAUTH_TOKEN \
-  KILOCODE_TOKEN \
-  ZAI_API_KEY
-do
-  load_secret_from_file "$secret_var"
-done
+load_provider_secrets
 
 # shellcheck source=scripts/opencode-helpers.sh
 . "${SCRIPT_DIR}/opencode-helpers.sh"
 
 workspace_root="${WORKSPACE_ROOT:-/workspace}"
-email_domain="${AGENT_GIT_EMAIL_DOMAIN:-agents.local}"
 global_extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 target_repo="${TARGET_REPO:-}"
 launch_jitter_min="${LAUNCH_JITTER_MIN_SECS:-120}"
@@ -108,48 +96,7 @@ shuffle_agents() {
 declare -A seen_agents=()
 declare -a agent_ids=()
 declare -a agent_tokens=()
-
-for slot in $(seq 1 "$max_agents"); do
-  suffix="$(printf '%02d' "$slot")"
-  id_var="AGENT_ID_${suffix}"
-  token_var="AGENT_GITHUB_TOKEN_${suffix}"
-  token_file_var="${token_var}_FILE"
-
-  agent_id="$(trim "${!id_var:-}")"
-  token_inline="${!token_var:-}"
-  token_file="${!token_file_var:-}"
-
-  if [ -z "$agent_id" ] && [ -z "$token_inline" ] && [ -z "$token_file" ]; then
-    continue
-  fi
-
-  if [ -z "$agent_id" ]; then
-    echo "${id_var} is required when ${token_var} or ${token_file_var} is set." >&2
-    exit 1
-  fi
-
-  agent_token="$(load_slot_token "$suffix")"
-  if [ -z "$agent_token" ]; then
-    echo "Missing token for slot ${suffix}. Set ${token_var} or ${token_file_var}." >&2
-    exit 1
-  fi
-
-  validate_agent_id "$agent_id"
-
-  if [ -n "${seen_agents[$agent_id]:-}" ]; then
-    echo "Duplicate agent id detected: ${agent_id}" >&2
-    exit 1
-  fi
-  seen_agents["$agent_id"]=1
-
-  agent_ids+=("$agent_id")
-  agent_tokens+=("$agent_token")
-done
-
-if [ "${#agent_ids[@]}" -eq 0 ]; then
-  echo "No agents configured. Set AGENT_ID_01 + AGENT_GITHUB_TOKEN_01 (up to _10)." >&2
-  exit 1
-fi
+load_agent_slots "$max_agents"
 
 mkdir -p "$token_tmp_root"
 chmod 700 "$token_tmp_root" 2>/dev/null || true
@@ -169,7 +116,7 @@ log "Randomized launch order: ${agent_ids[*]}"
 preflight_check() {
   local provider="${AGENT_PROVIDER:-claude}"
   local auth_mode="${AGENT_AUTH_MODE:-auto}"
-  local prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/default.md}"
+  local prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/system/autonomous.md}"
   local failures=0
 
   log "Pre-flight: validating configuration"
@@ -180,89 +127,37 @@ preflight_check() {
     failures=$((failures + 1))
   fi
 
-  # Prompt file exists
   if [ ! -f "$prompt_file" ]; then
     echo "Pre-flight: prompt file not found: ${prompt_file}" >&2
     failures=$((failures + 1))
+  else
+    # Built-in prompts require the shared base prompt; standalone custom
+    # prompts remain valid without a sibling base.md.
+    if ! resolve_companion_base_prompt "$prompt_file" >/dev/null; then
+      if prompt_requires_companion_base "$prompt_file"; then
+        echo "Pre-flight: base prompt file not found: $(dirname "$prompt_file")/base.md" >&2
+        failures=$((failures + 1))
+      fi
+    fi
+  fi
+
+  # Skill files exist
+  if [ -n "${AGENT_SKILLS:-}" ]; then
+    local skill_name
+    while IFS= read -r skill_name; do
+      skill_name="$(trim "$skill_name")"
+      [ -z "$skill_name" ] && continue
+      if [ ! -f "/opt/hivemoot-agent/skills/${skill_name}/SKILL.md" ]; then
+        echo "Pre-flight: skill file not found: /opt/hivemoot-agent/skills/${skill_name}/SKILL.md" >&2
+        failures=$((failures + 1))
+      fi
+    done < <(tr ',' '\n' <<< "${AGENT_SKILLS}")
   fi
 
   # Provider auth check
-  case "$provider" in
-    codex)
-      local resolved="$auth_mode"
-      [ "$resolved" = "auto" ] && resolved=$( [ -n "${OPENAI_API_KEY:-}" ] && echo "api_key" || echo "subscription" )
-      if [ "$resolved" = "api_key" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
-        echo "Pre-flight: OPENAI_API_KEY missing for codex + api_key mode." >&2
-        failures=$((failures + 1))
-      fi
-      ;;
-    gemini)
-      local resolved="$auth_mode"
-      [ "$resolved" = "auto" ] && resolved=$( { [ -n "${GOOGLE_API_KEY:-}" ] || [ -n "${GEMINI_API_KEY:-}" ]; } && echo "api_key" || echo "subscription" )
-      if [ "$resolved" = "api_key" ] && [ -z "${GOOGLE_API_KEY:-}" ] && [ -z "${GEMINI_API_KEY:-}" ]; then
-        echo "Pre-flight: GOOGLE_API_KEY/GEMINI_API_KEY missing for gemini + api_key mode." >&2
-        failures=$((failures + 1))
-      fi
-      ;;
-    claude)
-      local resolved="$auth_mode"
-      [ "$resolved" = "auto" ] && resolved=$( [ -n "${ANTHROPIC_API_KEY:-}" ] && echo "api_key" || echo "subscription" )
-      if [ "$resolved" = "api_key" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-        echo "Pre-flight: ANTHROPIC_API_KEY missing for claude + api_key mode." >&2
-        failures=$((failures + 1))
-      fi
-      ;;
-    kilo)
-      if [ -z "${KILOCODE_TOKEN:-}" ]; then
-        if [ -z "${KILO_PROVIDER:-}" ]; then
-          echo "Pre-flight: KILO_PROVIDER is required for kilo (unless KILOCODE_TOKEN is set for gateway mode)." >&2
-          failures=$((failures + 1))
-        else
-          case "${KILO_PROVIDER}" in
-            anthropic)
-              if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-                echo "Pre-flight: ANTHROPIC_API_KEY missing for KILO_PROVIDER=anthropic." >&2
-                failures=$((failures + 1))
-              fi
-              ;;
-            openai)
-              if [ -z "${OPENAI_API_KEY:-}" ]; then
-                echo "Pre-flight: OPENAI_API_KEY missing for KILO_PROVIDER=openai." >&2
-                failures=$((failures + 1))
-              fi
-              ;;
-            google)
-              if [ -z "${GOOGLE_API_KEY:-}" ] && [ -z "${GEMINI_API_KEY:-}" ]; then
-                echo "Pre-flight: GOOGLE_API_KEY/GEMINI_API_KEY missing for KILO_PROVIDER=google." >&2
-                failures=$((failures + 1))
-              fi
-              ;;
-            openrouter)
-              if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-                echo "Pre-flight: OPENROUTER_API_KEY missing for KILO_PROVIDER=openrouter." >&2
-                failures=$((failures + 1))
-              fi
-              ;;
-          esac
-        fi
-      fi
-      ;;
-    opencode)
-      if [ -n "${OPENCODE_PROVIDER:-}" ]; then
-        case "${OPENCODE_PROVIDER}" in
-          zai)
-            if [ -z "${ZAI_API_KEY:-}" ]; then
-              echo "Pre-flight: ZAI_API_KEY missing for OPENCODE_PROVIDER=zai." >&2
-              failures=$((failures + 1))
-            fi
-            ;;
-        esac
-      elif [ ! -f "/home/node/.local/share/opencode/auth.json" ]; then
-        echo "Pre-flight: OpenCode auth not configured. Set OPENCODE_PROVIDER + API key, or run: opencode auth login." >&2
-        failures=$((failures + 1))
-      fi
-      ;;
-  esac
+  local auth_failures=0
+  preflight_check_provider_auth "$provider" "$auth_mode" || auth_failures=$?
+  failures=$((failures + auth_failures))
 
   # Validate ALL agent tokens against GitHub API
   local index
@@ -356,33 +251,7 @@ for index in "${!agent_ids[@]}"; do
     set -euo pipefail
     umask 077
 
-    mkdir -p \
-      "$agent_home/.config" \
-      "$agent_home/.cache" \
-      "$agent_home/.local" \
-      "$agent_home/.local/share"
-    chmod 700 \
-      "$agent_home/.config" \
-      "$agent_home/.cache" \
-      "$agent_home/.local" \
-      "$agent_home/.local/share" 2>/dev/null || true
-
-    # Preserve per-agent isolation while allowing subscription auth reuse:
-    # copy shared provider home state once into each agent home.
-    seed_shared_provider_state "$agent_home"
-
-    # Generate OpenCode auth.json if missing (API key stored in auth.json,
-    # not in config provider options). Must run after shared-state seeding so
-    # the bind-mounted config is already in place.
-    generate_opencode_config "$agent_home"
-
-    # Login shells (bash -lc) reset PATH from /etc/profile, losing the
-    # Docker ENV that includes the npm global bin directory. Write a
-    # .profile so agent subprocesses (codex/gemini/claude CLI tools)
-    # can find hivemoot and other npm-installed binaries.
-    # shellcheck disable=SC2016  # literal ${PATH} intended for .profile
-    printf 'export PATH="/usr/local/share/npm-global/bin:${PATH}"\n' \
-      > "$agent_home/.profile"
+    init_agent_home "$agent_home"
 
     unset AGENT_GITHUB_TOKEN GITHUB_TOKEN GH_TOKEN
     export HOME="$agent_home"
@@ -391,7 +260,6 @@ for index in "${!agent_ids[@]}"; do
     export LOG_DIR="$agent_log_dir"
     export AGENT_GITHUB_TOKEN_FILE="$token_file"
     export AGENT_GIT_NAME="$agent_id"
-    export AGENT_GIT_EMAIL="${agent_id}@${email_domain}"
     export HIVEMOOT_BUZZ_ROLE="$agent_id"
     export AGENT_EXTRA_PROMPT="$agent_extra_prompt"
 

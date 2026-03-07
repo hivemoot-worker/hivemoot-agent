@@ -104,22 +104,135 @@ resolve_job_home() {
 load_secret_from_file() {
   local var_name="$1"
   local file_var_name="${var_name}_FILE"
+  local var_value=""
+
+  if ! var_value="$(resolve_secret_value "$var_name")"; then
+    exit 1
+  fi
+
+  if [ -z "$var_value" ]; then
+    return 0
+  fi
+
+  printf -v "$var_name" '%s' "$var_value"
+  # shellcheck disable=SC2163  # dynamic export of the variable named in $var_name
+  export "$var_name"
+  # Clear _FILE after promoting to bare var so repeated calls (e.g.
+  # run-task.sh → run-once.sh both call load_secret_from_file) don't
+  # trip resolve_secret_value's mutual-exclusion guard.
+  unset "$file_var_name"
+}
+
+# Resolve secret value without mutating env so callers can consume a secret
+# locally while still forwarding *_FILE to child processes when needed.
+resolve_secret_value() {
+  local var_name="$1"
+  local file_var_name="${var_name}_FILE"
   local var_value="${!var_name:-}"
   local file_value="${!file_var_name:-}"
 
-  if [ -n "$var_value" ] || [ -z "$file_value" ]; then
+  if [ -n "$var_value" ] && [ -n "$file_value" ]; then
+    echo "Set either ${var_name} or ${file_var_name}, not both." >&2
+    return 1
+  fi
+
+  if [ -n "$var_value" ]; then
+    printf '%s' "$var_value"
+    return 0
+  fi
+
+  if [ -z "$file_value" ]; then
     return 0
   fi
 
   if [ ! -f "$file_value" ]; then
     echo "${file_var_name} is set but file does not exist: ${file_value}" >&2
-    exit 1
+    return 1
   fi
 
-  var_value="$(tr -d '\r\n' < "$file_value")"
-  printf -v "$var_name" '%s' "$var_value"
-  # shellcheck disable=SC2163  # dynamic export of the variable named in $var_name
-  export "$var_name"
+  tr -d '\r\n' < "$file_value"
+}
+
+# Load all provider API secrets from their corresponding *_FILE env vars.
+# Called at startup in every entrypoint (entrypoint.sh, run-loop.sh,
+# run-multi.sh, run-once.sh) so new provider keys only need adding here.
+load_provider_secrets() {
+  local secret_var
+  for secret_var in \
+    OPENAI_API_KEY \
+    GOOGLE_API_KEY \
+    GEMINI_API_KEY \
+    ANTHROPIC_API_KEY \
+    OPENROUTER_API_KEY \
+    CLAUDE_CODE_OAUTH_TOKEN \
+    KILOCODE_TOKEN \
+    ZAI_API_KEY
+  do
+    load_secret_from_file "$secret_var"
+  done
+}
+
+repo_name_is_valid() {
+  local repo_name="$1"
+  local repo_segment=""
+
+  if ! printf '%s' "$repo_name" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.-]+$'; then
+    return 1
+  fi
+
+  repo_segment="${repo_name#*/}"
+  case "$repo_segment" in
+    .|..)
+      return 1
+      ;;
+  esac
+
+  return 0
+}
+
+strip_frontmatter() {
+  local file="$1"
+  awk 'BEGIN{fm=0} /^---$/ && fm<2 {fm++; next} fm>=2||fm==0{print}' "$file"
+}
+
+load_skill_prompts() {
+  local skills_list="$1"
+  local skills_dir="${2:-/opt/hivemoot-agent/skills}"
+
+  [ -z "$skills_list" ] && return 0
+
+  local skill skill_file result="" first=1
+  while IFS= read -r skill; do
+    skill="$(trim "$skill")"
+    [ -z "$skill" ] && continue
+    case "$skill" in
+      *[!a-zA-Z0-9_-]*)
+        echo "Invalid skill name: '${skill}' (AGENT_SKILLS=${skills_list})" >&2
+        return 1
+        ;;
+    esac
+    skill_file="${skills_dir}/${skill}/SKILL.md"
+    if [ ! -f "$skill_file" ]; then
+      echo "Skill file not found: ${skill_file} (AGENT_SKILLS=${skills_list})" >&2
+      return 1
+    fi
+    local body
+    body="$(strip_frontmatter "$skill_file")"
+    if [ "$first" -eq 1 ]; then
+      result="<skill name=\"${skill}\">
+${body}
+</skill>"
+      first=0
+    else
+      result="${result}
+
+<skill name=\"${skill}\">
+${body}
+</skill>"
+    fi
+  done < <(tr ',' '\n' <<< "$skills_list")
+
+  printf '%s' "$result"
 }
 
 validate_target_repo() {
@@ -130,7 +243,7 @@ validate_target_repo() {
     exit 1
   fi
 
-  if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+  if ! repo_name_is_valid "$target_repo"; then
     echo "Invalid TARGET_REPO: ${target_repo}. Expected owner/repo." >&2
     exit 1
   fi
@@ -148,15 +261,84 @@ validate_workspace_root() {
   esac
 }
 
+resolve_companion_base_prompt() {
+  local prompt_file="$1"
+  local sibling_base_file=""
+
+  sibling_base_file="$(dirname "$prompt_file")/base.md"
+  if [ "$sibling_base_file" = "$prompt_file" ]; then
+    return 1
+  fi
+
+  if [ -f "$sibling_base_file" ]; then
+    printf '%s' "$sibling_base_file"
+    return 0
+  fi
+
+  return 1
+}
+
+prompt_requires_companion_base() {
+  local prompt_file="$1"
+
+  case "$prompt_file" in
+    /opt/hivemoot-agent/prompts/system/autonomous.md|/opt/hivemoot-agent/prompts/system/task.md)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
 validate_agent_id() {
   local agent_id="$1"
 
   case "$agent_id" in
     ''|*[!a-zA-Z0-9_-]*)
-      echo "Invalid agent id: ${agent_id}" >&2
+      echo "Invalid AGENT_ID: ${agent_id}" >&2
       exit 1
       ;;
   esac
+}
+
+# Deterministic offset within an interval for staggered scheduling.
+# md5(repo:agent_id) % interval → seconds. Spreads agents evenly so
+# they never cluster at the same wake-up time.
+compute_agent_offset() {
+  local repo="$1"
+  local agent_id="$2"
+  local interval="$3"
+  local hash_input="${repo}:${agent_id}"
+  local hash_hex=""
+
+  if [ "$interval" -le 1 ]; then
+    printf '0'
+    return 0
+  fi
+
+  # Use first 8 hex digits (32 bits) — enough for any practical interval.
+  # md5sum on Linux, md5 on macOS.
+  if command -v md5sum >/dev/null 2>&1; then
+    hash_hex="$(printf '%s' "$hash_input" | md5sum | cut -c1-8)"
+  elif command -v md5 >/dev/null 2>&1; then
+    hash_hex="$(printf '%s' "$hash_input" | md5 -q | cut -c1-8)"
+  else
+    # Fallback: cksum is POSIX and always available
+    local cksum_val=""
+    cksum_val="$(printf '%s' "$hash_input" | cksum | cut -d' ' -f1)"
+    printf '%s' "$((cksum_val % interval))"
+    return 0
+  fi
+
+  # Guard against empty output — an empty hash_hex would cause a bash
+  # arithmetic syntax error in the 16# expansion below.
+  if [ -z "$hash_hex" ]; then
+    printf '0'
+    return 0
+  fi
+
+  # shellcheck disable=SC2004  # 16# prefix requires no $ on hash_hex
+  printf '%s' "$(( 16#${hash_hex} % interval ))"
 }
 
 load_slot_token() {
@@ -180,6 +362,146 @@ load_slot_token() {
   fi
 
   printf '%s' "$token"
+}
+
+# Populate caller-declared seen_agents, agent_ids, and agent_tokens by reading
+# AGENT_ID_XX / AGENT_GITHUB_TOKEN_XX(_FILE) env vars for slots 1..<max_slots>.
+# Arrays must be declared in the caller scope before calling this function:
+#   declare -A seen_agents=()
+#   declare -a agent_ids=()
+#   declare -a agent_tokens=()
+load_agent_slots() {
+  local max_slots="${1:-10}"
+  local slot suffix id_var token_var token_file_var
+  local agent_id agent_token token_inline token_file
+
+  for slot in $(seq 1 "$max_slots"); do
+    suffix="$(printf '%02d' "$slot")"
+    id_var="AGENT_ID_${suffix}"
+    token_var="AGENT_GITHUB_TOKEN_${suffix}"
+    token_file_var="${token_var}_FILE"
+
+    agent_id="$(trim "${!id_var:-}")"
+    token_inline="${!token_var:-}"
+    token_file="${!token_file_var:-}"
+
+    if [ -z "$agent_id" ] && [ -z "$token_inline" ] && [ -z "$token_file" ]; then
+      continue
+    fi
+
+    if [ -z "$agent_id" ]; then
+      echo "${id_var} is required when ${token_var} or ${token_file_var} is set." >&2
+      exit 1
+    fi
+
+    agent_token="$(load_slot_token "$suffix")"
+    if [ -z "$agent_token" ]; then
+      echo "Missing token for slot ${suffix}. Set ${token_var} or ${token_file_var}." >&2
+      exit 1
+    fi
+
+    validate_agent_id "$agent_id"
+
+    if [ -n "${seen_agents[$agent_id]:-}" ]; then
+      echo "Duplicate agent id detected: ${agent_id}" >&2
+      exit 1
+    fi
+    seen_agents["$agent_id"]=1
+
+    agent_ids+=("$agent_id")
+    agent_tokens+=("$agent_token")
+  done
+
+  if [ "${#agent_ids[@]}" -eq 0 ]; then
+    echo "No agents configured. Set AGENT_ID_01 + AGENT_GITHUB_TOKEN_01 (up to _10)." >&2
+    exit 1
+  fi
+}
+
+preflight_check_provider_auth() {
+  local provider="$1"
+  local auth_mode="${2:-auto}"
+  local failures=0
+
+  # Provider auth check
+  case "$provider" in
+    codex)
+      local resolved="$auth_mode"
+      [ "$resolved" = "auto" ] && resolved=$( [ -n "${OPENAI_API_KEY:-}" ] && echo "api_key" || echo "subscription" )
+      if [ "$resolved" = "api_key" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+        echo "Pre-flight: OPENAI_API_KEY missing for codex + api_key mode." >&2
+        failures=$((failures + 1))
+      fi
+      ;;
+    gemini)
+      local resolved="$auth_mode"
+      [ "$resolved" = "auto" ] && resolved=$( { [ -n "${GOOGLE_API_KEY:-}" ] || [ -n "${GEMINI_API_KEY:-}" ]; } && echo "api_key" || echo "subscription" )
+      if [ "$resolved" = "api_key" ] && [ -z "${GOOGLE_API_KEY:-}" ] && [ -z "${GEMINI_API_KEY:-}" ]; then
+        echo "Pre-flight: GOOGLE_API_KEY/GEMINI_API_KEY missing for gemini + api_key mode." >&2
+        failures=$((failures + 1))
+      fi
+      ;;
+    claude)
+      local resolved="$auth_mode"
+      [ "$resolved" = "auto" ] && resolved=$( [ -n "${ANTHROPIC_API_KEY:-}" ] && echo "api_key" || echo "subscription" )
+      if [ "$resolved" = "api_key" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+        echo "Pre-flight: ANTHROPIC_API_KEY missing for claude + api_key mode." >&2
+        failures=$((failures + 1))
+      fi
+      ;;
+    kilo)
+      if [ -z "${KILOCODE_TOKEN:-}" ]; then
+        if [ -z "${KILO_PROVIDER:-}" ]; then
+          echo "Pre-flight: KILO_PROVIDER is required for kilo (unless KILOCODE_TOKEN is set for gateway mode)." >&2
+          failures=$((failures + 1))
+        else
+          case "${KILO_PROVIDER}" in
+            anthropic)
+              if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+                echo "Pre-flight: ANTHROPIC_API_KEY missing for KILO_PROVIDER=anthropic." >&2
+                failures=$((failures + 1))
+              fi
+              ;;
+            openai)
+              if [ -z "${OPENAI_API_KEY:-}" ]; then
+                echo "Pre-flight: OPENAI_API_KEY missing for KILO_PROVIDER=openai." >&2
+                failures=$((failures + 1))
+              fi
+              ;;
+            google)
+              if [ -z "${GOOGLE_API_KEY:-}" ] && [ -z "${GEMINI_API_KEY:-}" ]; then
+                echo "Pre-flight: GOOGLE_API_KEY/GEMINI_API_KEY missing for KILO_PROVIDER=google." >&2
+                failures=$((failures + 1))
+              fi
+              ;;
+            openrouter)
+              if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+                echo "Pre-flight: OPENROUTER_API_KEY missing for KILO_PROVIDER=openrouter." >&2
+                failures=$((failures + 1))
+              fi
+              ;;
+          esac
+        fi
+      fi
+      ;;
+    opencode)
+      if [ -n "${OPENCODE_PROVIDER:-}" ]; then
+        case "${OPENCODE_PROVIDER}" in
+          zai)
+            if [ -z "${ZAI_API_KEY:-}" ]; then
+              echo "Pre-flight: ZAI_API_KEY missing for OPENCODE_PROVIDER=zai." >&2
+              failures=$((failures + 1))
+            fi
+            ;;
+        esac
+      elif [ ! -f "/home/node/.local/share/opencode/auth.json" ]; then
+        echo "Pre-flight: OpenCode auth not configured. Set OPENCODE_PROVIDER + API key, or run: opencode auth login." >&2
+        failures=$((failures + 1))
+      fi
+      ;;
+  esac
+
+  return "$failures"
 }
 
 prepare_hivemoot_cli() {
@@ -300,4 +622,34 @@ seed_provider_auth() {
 
   # OpenCode: auto-generate config and auth.json if missing
   generate_opencode_config "$agent_home"
+}
+
+# Create standard agent home subdirectories, seed provider auth credentials,
+# and write a .profile so agent subprocesses can find npm-installed binaries.
+# Call this once per agent before launching run-once.sh.
+init_agent_home() {
+  local agent_home="$1"
+
+  mkdir -p \
+    "$agent_home/.config" \
+    "$agent_home/.cache" \
+    "$agent_home/.local" \
+    "$agent_home/.local/share"
+  chmod 700 \
+    "$agent_home/.config" \
+    "$agent_home/.cache" \
+    "$agent_home/.local" \
+    "$agent_home/.local/share" 2>/dev/null || true
+
+  # Seed only auth credentials into each agent home; skip session state
+  # (conversation caches, memory, history) to prevent cross-run leakage.
+  seed_provider_auth "$agent_home"
+
+  # Login shells (bash -lc) reset PATH from /etc/profile, losing the
+  # Docker ENV that includes the npm global bin directory. Write a
+  # .profile so agent subprocesses (codex/gemini/claude CLI tools)
+  # can find hivemoot and other npm-installed binaries.
+  # shellcheck disable=SC2016  # literal ${PATH} intended for .profile
+  printf 'export PATH="/usr/local/share/npm-global/bin:${PATH}"\n' \
+    > "$agent_home/.profile"
 }
