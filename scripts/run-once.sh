@@ -109,6 +109,8 @@ load_provider_secrets
 
 # shellcheck source=scripts/opencode-helpers.sh
 . "${SCRIPT_DIR}/opencode-helpers.sh"
+# shellcheck source=scripts/lib-agent.sh
+. "${SCRIPT_DIR}/lib-agent.sh"
 # shellcheck source=scripts/token-extractor.sh
 . "${SCRIPT_DIR}/token-extractor.sh"
 

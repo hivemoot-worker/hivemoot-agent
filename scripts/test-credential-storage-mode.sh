@@ -37,6 +37,8 @@ echo "Running credential storage mode checks"
 . scripts/lib.sh
 # shellcheck source=scripts/opencode-helpers.sh
 . scripts/opencode-helpers.sh
+# shellcheck source=scripts/lib-agent.sh
+. scripts/lib-agent.sh
 
 OPENAI_API_KEY=""
 assert_eq "subscription" "$(resolve_effective_auth_mode "codex" "auto")" "codex auto resolves to subscription without API key"

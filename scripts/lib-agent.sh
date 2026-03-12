@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# lib-agent.sh — agent home path resolution and provider auth seeding helpers.
+#
+# Extracted from lib.sh. Source this file directly in any script that needs
+# agent-home setup or provider-state seeding. `seed_provider_auth()` and
+# `init_agent_home()` call `generate_opencode_config()`, so callers must source
+# opencode-helpers.sh before invoking those functions.
+
+# lib-agent.sh is a sourced library; avoid "return" errors when run directly.
+if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
+  echo "scripts/lib-agent.sh is a library and should be sourced, not executed." >&2
+  exit 0
+fi
+
+if [ -n "${HIVEMOOT_LIB_AGENT_LOADED:-}" ]; then
+  return 0
+fi
+HIVEMOOT_LIB_AGENT_LOADED=1
+
+resolve_managed_agent_home() {
+  local workspace_root="$1"
+  local agent_id="$2"
+  local effective_auth_mode="${3:-api_key}"
+
+  if [ "$effective_auth_mode" = "subscription" ]; then
+    printf '%s/homes/%s' "$workspace_root" "$agent_id"
+  else
+    printf '/tmp/hivemoot-agent-home/agents/%s' "$agent_id"
+  fi
+}
+
+resolve_job_home() {
+  local workspace_root="$1"
+  local job_id="$2"
+  local effective_auth_mode="${3:-api_key}"
+
+  if [ "$effective_auth_mode" = "subscription" ]; then
+    printf '%s/%s/home' "$workspace_root" "$job_id"
+  else
+    printf '/tmp/hivemoot-agent-home/jobs/%s' "$job_id"
+  fi
+}
+
+seed_provider_home() {
+  local shared_path="$1"
+  local agent_path="$2"
+
+  if [ ! -e "$shared_path" ]; then
+    return 0
+  fi
+
+  if [ -d "$shared_path" ]; then
+    mkdir -p "$agent_path"
+    cp -R "$shared_path"/. "$agent_path"/
+  else
+    mkdir -p "$(dirname "$agent_path")"
+    cp "$shared_path" "$agent_path"
+  fi
+}
+
+# Managed-mode seeding: copy shared provider state into each isolated
+# agent home. This intentionally mirrors directory-level provider data.
+seed_shared_provider_state() {
+  local agent_home="$1"
+  local source_home="${2:-/home/node}"
+
+  seed_provider_home "${source_home}/.codex" "${agent_home}/.codex"
+  seed_provider_home "${source_home}/.gemini" "${agent_home}/.gemini"
+  seed_provider_home "${source_home}/.claude" "${agent_home}/.claude"
+  seed_provider_home "${source_home}/.claude.json" "${agent_home}/.claude.json"
+  seed_provider_home "${source_home}/.config/claude" "${agent_home}/.config/claude"
+  seed_provider_home "${source_home}/.config/kilo" "${agent_home}/.config/kilo"
+  seed_provider_home "${source_home}/.config/opencode" "${agent_home}/.config/opencode"
+  seed_provider_home "${source_home}/.local/share/opencode" "${agent_home}/.local/share/opencode"
+}
+
+# Selective auth seeding: copy only credential files for a provider,
+# skipping conversation caches and session state. Use this instead of
+# seed_provider_home when JOB_ID isolation is active.
+seed_provider_auth() {
+  local agent_home="$1"
+  local source_home="${2:-/home/node}"
+
+  # Claude Code: auth tokens in ~/.config/claude/
+  if [ -d "${source_home}/.config/claude" ]; then
+    mkdir -p "${agent_home}/.config/claude"
+    cp -R "${source_home}/.config/claude"/. "${agent_home}/.config/claude"/
+  fi
+  # Claude Code: ~/.claude/ contains both auth and session state.
+  # Seed only the OAuth credential file; skip auto-memory and projects/.
+  if [ -f "${source_home}/.claude/.credentials.json" ]; then
+    mkdir -p "${agent_home}/.claude"
+    cp "${source_home}/.claude/.credentials.json" "${agent_home}/.claude/.credentials.json"
+  fi
+  if [ -f "${source_home}/.claude.json" ]; then
+    cp "${source_home}/.claude.json" "${agent_home}/.claude.json"
+  fi
+
+  # Codex: only auth.json
+  if [ -f "${source_home}/.codex/auth.json" ]; then
+    mkdir -p "${agent_home}/.codex"
+    cp "${source_home}/.codex/auth.json" "${agent_home}/.codex/auth.json"
+  fi
+  # Codex: skip conversations/, cache/
+
+  # Gemini: seed auth/credential files + settings.json (contains auth method
+  # selection); skip session state (memory.md, state.json, telemetry, etc.)
+  if [ -d "${source_home}/.gemini" ]; then
+    mkdir -p "${agent_home}/.gemini"
+    for f in oauth_creds.json google_accounts.json settings.json mcp-oauth-tokens.json mcp-oauth-tokens-v2.json .env; do
+      if [ -f "${source_home}/.gemini/$f" ]; then
+        cp "${source_home}/.gemini/$f" "${agent_home}/.gemini/$f"
+      fi
+    done
+  fi
+
+  # Kilo: config directory holds provider auth and permission settings
+  if [ -d "${source_home}/.config/kilo" ]; then
+    mkdir -p "${agent_home}/.config/kilo"
+    cp -R "${source_home}/.config/kilo"/. "${agent_home}/.config/kilo"/
+  fi
+
+  # OpenCode: config directory holds provider auth and permission settings
+  if [ -d "${source_home}/.config/opencode" ]; then
+    mkdir -p "${agent_home}/.config/opencode"
+    cp -R "${source_home}/.config/opencode"/. "${agent_home}/.config/opencode"/
+  fi
+  # OpenCode: auth credentials from ~/.local/share/opencode/
+  if [ -f "${source_home}/.local/share/opencode/auth.json" ]; then
+    mkdir -p "${agent_home}/.local/share/opencode"
+    cp "${source_home}/.local/share/opencode/auth.json" "${agent_home}/.local/share/opencode/auth.json"
+  fi
+
+  # OpenCode: auto-generate config and auth.json if missing
+  generate_opencode_config "$agent_home"
+}
+
+# Create standard agent home subdirectories, seed provider auth credentials,
+# and write a .profile so agent subprocesses can find npm-installed binaries.
+# Call this once per agent before launching run-once.sh.
+init_agent_home() {
+  local agent_home="$1"
+
+  mkdir -p \
+    "$agent_home/.config" \
+    "$agent_home/.cache" \
+    "$agent_home/.local" \
+    "$agent_home/.local/share"
+  chmod 700 \
+    "$agent_home/.config" \
+    "$agent_home/.cache" \
+    "$agent_home/.local" \
+    "$agent_home/.local/share" 2>/dev/null || true
+
+  # Seed only auth credentials into each agent home; skip session state
+  # (conversation caches, memory, history) to prevent cross-run leakage.
+  seed_provider_auth "$agent_home"
+
+  # Login shells (bash -lc) reset PATH from /etc/profile, losing the
+  # Docker ENV that includes the npm global bin directory. Write a
+  # .profile so agent subprocesses (codex/gemini/claude CLI tools)
+  # can find hivemoot and other npm-installed binaries.
+  # shellcheck disable=SC2016  # literal ${PATH} intended for .profile
+  printf 'export PATH="/usr/local/share/npm-global/bin:${PATH}"\n' \
+    > "$agent_home/.profile"
+}

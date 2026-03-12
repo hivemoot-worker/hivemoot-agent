@@ -13,6 +13,8 @@ load_provider_secrets
 
 # shellcheck source=scripts/opencode-helpers.sh
 . "${SCRIPT_DIR}/opencode-helpers.sh"
+# shellcheck source=scripts/lib-agent.sh
+. "${SCRIPT_DIR}/lib-agent.sh"
 
 workspace_root="${WORKSPACE_ROOT:-/workspace}"
 global_extra_prompt="${AGENT_EXTRA_PROMPT:-}"

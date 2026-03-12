@@ -64,6 +64,8 @@ assert_file_mode_600 "$tmp_home/.claude.json"
 # Managed-mode seeding must propagate both Claude auth files.
 # shellcheck source=scripts/lib.sh
 . scripts/lib.sh
+# shellcheck source=scripts/lib-agent.sh
+. scripts/lib-agent.sh
 
 mkdir -p "$tmp_shared_home/.claude"
 printf '%s' '{"claudeAiOauth":{"accessToken":"managed-token","expiresAt":4102444800000}}' \
