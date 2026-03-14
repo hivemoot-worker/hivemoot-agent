@@ -217,6 +217,37 @@ run_case_direct_env() {
   assert_file_contains "$MOCK_CURL_CALLS" '"action": "complete"'
 }
 
+run_case_overrides_inherited_session_key() {
+  local case_dir="${tmp_root}/case-inherited-session-key"
+  local result_path="${case_dir}/workspace/task-output/task-session-key/result.md"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-inherited-key" \
+    AGENT_TASK_ID="task-session-key" \
+    AGENT_TASK_PROMPT="Keep the task session scoped correctly" \
+    TARGET_REPO="owner/repo" \
+    SESSION_RESUME=1 \
+    AGENT_SESSION_KEY="mention-thread:12345" \
+    bash scripts/run-task.sh
+
+  assert_file_contains "$result_path" "# Task Result"
+  assert_file_contains "$MOCK_ENV_SNAPSHOT" "SESSION_RESUME=1"
+  assert_file_contains "$MOCK_ENV_SNAPSHOT" "AGENT_SESSION_KEY=task:task-session-key"
+  assert_file_not_contains "$MOCK_ENV_SNAPSHOT" "AGENT_SESSION_KEY=mention-thread:12345"
+}
+
 run_case_preserves_explicit_prompt_override() {
   local case_dir="${tmp_root}/case-explicit-prompt-override"
   local result_path="${case_dir}/workspace/task-output/task-custom-prompt/result.md"
@@ -1282,6 +1313,7 @@ run_case_codex_sidecar_fallback_to_jsonl
 run_case_gemini_text_result
 run_case_claude_text_result
 run_case_claude_stream_json_result
+run_case_overrides_inherited_session_key
 run_case_codex_auth_error_detected
 run_case_codex_auth_error_with_nested_code
 run_case_codex_auth_error_suppressed_when_result_exists

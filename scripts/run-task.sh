@@ -294,9 +294,9 @@ validate_target_repo "$task_repo"
 result_path="${workspace_root}/task-output/${task_id}/result.md"
 
 # Task follow-ups reuse the normal session lifecycle unless explicitly disabled.
-# Default to a task-scoped key so direct task reruns and controller-dispatched
-# follow-ups can resume the same provider session when policy allows it.
-export AGENT_SESSION_KEY="${AGENT_SESSION_KEY:-task:${task_id}}"
+# Always switch to a task-scoped key so inherited mention-thread keys cannot
+# leak into task mode and resume the wrong provider session.
+export AGENT_SESSION_KEY="task:${task_id}"
 
 # Task mode uses the task prompt (AGENT_EXTRA_PROMPT) as its full instruction
 # set — role resolution via `hivemoot role <name>` is not needed and would fail
