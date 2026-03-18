@@ -71,6 +71,41 @@ assert_no_codex_auth_residue() {
   fi
 }
 
+assert_no_gemini_auth_residue() {
+  local homes_root="$1"
+  local auth_file=""
+  local -a auth_files=()
+  local -a gemini_auth_files=(
+    "oauth_creds.json"
+    "google_accounts.json"
+    "settings.json"
+    "mcp-oauth-tokens.json"
+    "mcp-oauth-tokens-v2.json"
+    ".env"
+  )
+
+  shopt -s nullglob
+  for auth_file in "${gemini_auth_files[@]}"; do
+    auth_files+=("${homes_root}"/*/.gemini/"${auth_file}")
+  done
+  shopt -u nullglob
+
+  if [ "${#auth_files[@]}" -ne 0 ]; then
+    echo "Unexpected Gemini auth file residue:" >&2
+    printf '  %s\n' "${auth_files[@]}" >&2
+    fail "leftover Gemini auth file in job home"
+  fi
+}
+
+seed_gemini_auth_dir() {
+  local gemini_auth_dir="$1"
+
+  mkdir -p "$gemini_auth_dir"
+  printf '{"refresh_token":"gemini-test-token"}\n' > "${gemini_auth_dir}/oauth_creds.json"
+  printf '[{"email":"gemini@example.com"}]\n' > "${gemini_auth_dir}/google_accounts.json"
+  printf '{"selectedType":"oauth-personal"}\n' > "${gemini_auth_dir}/settings.json"
+}
+
 setup_mock_docker() {
   local mock_bin="$1"
   mkdir -p "$mock_bin"
@@ -135,6 +170,44 @@ next_id() {
   printf 'mock-container-%s' "$current"
 }
 
+snapshot_job_home() {
+  local arg=""
+  local mount_spec=""
+  local job_home=""
+  local snapshot_file="${state_dir}/job-home-snapshots.log"
+
+  while [ "$#" -gt 0 ]; do
+    arg="$1"
+    case "$arg" in
+      -v)
+        mount_spec="${2:-}"
+        if [[ "$mount_spec" == *:/home/node ]]; then
+          job_home="${mount_spec%:/home/node}"
+        fi
+        shift 2
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+
+  if [ -z "$job_home" ]; then
+    printf '%s\n' "job_home=missing gemini_settings=missing" >> "$snapshot_file"
+    return 0
+  fi
+
+  if [ -f "${job_home}/.gemini/settings.json" ]; then
+    printf 'job_home=%s gemini_settings=%s\n' \
+      "$job_home" \
+      "$(tr -d '\n' < "${job_home}/.gemini/settings.json")" \
+      >> "$snapshot_file"
+    return 0
+  fi
+
+  printf 'job_home=%s gemini_settings=missing\n' "$job_home" >> "$snapshot_file"
+}
+
 case "$cmd" in
   run)
     # mkdir is atomic and keeps overlap detection deterministic under concurrency.
@@ -142,6 +215,7 @@ case "$cmd" in
       echo "overlap" >> "$overlap_file"
     fi
 
+    snapshot_job_home "$@"
     printf '%s\n' "$*" >> "$run_log_file"
 
     if [ -n "${MOCK_DOCKER_DELETE_FILE_ON_FIRST_RUN:-}" ] && [ ! -f "$first_run_marker_file" ]; then
@@ -163,7 +237,11 @@ case "$cmd" in
   logs)
     container_id="${*: -1}"
     exited_file="$(container_exited_file "$container_id")"
-    echo "mock log stream"
+    if [ -n "${MOCK_DOCKER_LOG_CONTENT:-}" ]; then
+      printf '%s\n' "$MOCK_DOCKER_LOG_CONTENT"
+    else
+      echo "mock log stream"
+    fi
     while [ ! -f "$exited_file" ]; do
       sleep 0.1
     done
@@ -279,6 +357,7 @@ write_format=""
 auth_header=""
 url=""
 data=""
+read_header_from_stdin=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -293,6 +372,8 @@ while [ "$#" -gt 0 ]; do
     -H)
       if [ "${2:-}" != "" ] && [[ "${2:-}" == Authorization:* ]]; then
         auth_header="${2:-}"
+      elif [ "${2:-}" = "@-" ]; then
+        read_header_from_stdin=1
       fi
       shift 2
       ;;
@@ -318,6 +399,10 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if [ "$read_header_from_stdin" -eq 1 ]; then
+  auth_header="$(tr -d '\r\n' <&0)"
+fi
 
 printf 'URL=%s AUTH=%s DATA=%s\n' "$url" "$auth_header" "$data" >> "${state_dir}/curl.log"
 
@@ -350,6 +435,35 @@ fi
 EOF_MOCK
 
   chmod +x "${mock_bin}/curl"
+}
+
+setup_mock_uname_linux() {
+  local mock_bin="$1"
+  mkdir -p "$mock_bin"
+
+  cat > "${mock_bin}/uname" <<'EOF_MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "Linux"
+EOF_MOCK
+
+  chmod +x "${mock_bin}/uname"
+}
+
+setup_mock_chown_logger() {
+  local mock_bin="$1"
+  mkdir -p "$mock_bin"
+
+  cat > "${mock_bin}/chown" <<'EOF_MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_dir="${MOCK_CHOWN_STATE_DIR:?MOCK_CHOWN_STATE_DIR is required}"
+mkdir -p "$state_dir"
+
+printf '%s\n' "$*" >> "${state_dir}/chown.log"
+EOF_MOCK
+
+  chmod +x "${mock_bin}/chown"
 }
 
 setup_mock_rm_failer() {
@@ -395,10 +509,14 @@ run_success_case() {
   local repo_root="$1"
   local case_dir="$2"
   local codex_auth_source="${case_dir}/secrets/codex-auth.json"
+  local gemini_auth_dir="${case_dir}/secrets/gemini-auth"
+  local settings_snapshot=""
+  local settings_count=""
 
   mkdir -p "$case_dir"
   mkdir -p "${case_dir}/secrets"
   printf '{"access_token":"test-token"}\n' > "$codex_auth_source"
+  seed_gemini_auth_dir "$gemini_auth_dir"
   setup_mock_docker "${case_dir}/mock-bin"
 
   env -i \
@@ -417,6 +535,7 @@ run_success_case() {
     AGENT_GITHUB_TOKEN_02="token-2" \
     AGENT_TIMEOUT_SECONDS="120" \
     CODEX_AUTH_FILE="${codex_auth_source}" \
+    GEMINI_AUTH_DIR="${gemini_auth_dir}" \
     GIT_CLONE_DEPTH="1" \
     SHARED_CLONE_CACHE="0" \
     PERIODIC_INTERVAL_SECS="60" \
@@ -428,17 +547,24 @@ run_success_case() {
 
   run_log="${case_dir}/mock-state/docker-run.log"
   [ -f "$run_log" ] || fail "missing docker run log"
+  settings_snapshot="${case_dir}/mock-state/job-home-snapshots.log"
+  [ -f "$settings_snapshot" ] || fail "missing job home snapshot log"
 
   assert_file_contains "$run_log" "--cap-drop=ALL"
   assert_file_contains "$run_log" "--security-opt=no-new-privileges"
   assert_file_contains "$run_log" "--read-only"
   assert_file_contains "$run_log" "--tmpfs /tmp:size=2g,mode=1777"
   assert_file_contains "$run_log" "-e RUN_MODE=once"
+  assert_file_contains "$run_log" "-e RUN_TRIGGER_TYPE=scheduled"
   assert_file_contains "$run_log" "-e TARGET_REPO=owner/repo"
   assert_file_contains "$run_log" "-e JOB_ID="
   assert_file_contains "$run_log" "-e HIVEMOOT_CLI_UPDATE=skip"
   assert_file_contains "$run_log" "-e GIT_CLONE_DEPTH=1"
   assert_file_contains "$run_log" "-e SHARED_CLONE_CACHE=0"
+  assert_file_not_contains "$settings_snapshot" "gemini_settings=missing"
+  assert_file_contains "$settings_snapshot" 'gemini_settings={"selectedType":"oauth-personal"}'
+  settings_count="$(grep -Fc 'gemini_settings={"selectedType":"oauth-personal"}' "$settings_snapshot" | tr -d '[:space:]')"
+  assert_eq "2" "$settings_count" "expected Gemini settings.json in each job home before launch"
 
   shopt -s nullglob
   status_files=("${case_dir}/workspace"/workspaces/*/.hivemoot/status)
@@ -466,8 +592,113 @@ run_success_case() {
     assert_file_contains "$spec_file" '"timeout_seconds": 120'
   done
   assert_no_codex_auth_residue "${case_dir}/workspace/homes"
+  assert_no_gemini_auth_residue "${case_dir}/workspace/homes"
 
   echo "PASS: success case writes expected spawn flags and job artifacts"
+}
+
+run_per_agent_skill_routing_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local custom_skill_dir="${case_dir}/custom-skills/skill-one"
+  local custom_mount=""
+  local run_log=""
+  local worker_line=""
+  local builder_line=""
+
+  mkdir -p "$custom_skill_dir"
+  cat > "${custom_skill_dir}/SKILL.md" <<'EOF_SKILL'
+---
+name: skill-one
+description: Test custom skill
+---
+## Skill: Test Custom Skill
+EOF_SKILL
+
+  custom_mount="${custom_skill_dir}:/opt/hivemoot-agent/skills/skill-one:ro"
+
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_SKILLS_01="skill-one,release-readiness" \
+    AGENT_ID_02="builder" \
+    AGENT_GITHUB_TOKEN_02="token-2" \
+    AGENT_SKILLS_02="proposal-architect" \
+    AGENT_SKILL_BIND_MOUNTS="${custom_mount}" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    bash "${repo_root}/scripts/controller.sh"
+
+  run_log="${case_dir}/mock-state/docker-run.log"
+  [ -f "$run_log" ] || fail "missing docker run log in per-agent skill routing case"
+
+  worker_line="$(grep -F "AGENT_ID_01=worker" "$run_log" | head -n 1 || true)"
+  builder_line="$(grep -F "AGENT_ID_01=builder" "$run_log" | head -n 1 || true)"
+  [ -n "$worker_line" ] || fail "missing worker launch in per-agent skill routing case"
+  [ -n "$builder_line" ] || fail "missing builder launch in per-agent skill routing case"
+
+  if [[ "$worker_line" != *"AGENT_SKILLS=skill-one,release-readiness"* ]]; then
+    fail "worker launch did not receive worker-specific skills"
+  fi
+
+  if [[ "$builder_line" != *"AGENT_SKILLS=proposal-architect"* ]]; then
+    fail "builder launch did not receive builder-specific skills"
+  fi
+
+  if [[ "$worker_line" != *"${custom_mount}"* ]]; then
+    fail "custom skill bind mount missing from worker launch"
+  fi
+
+  if [[ "$builder_line" != *"${custom_mount}"* ]]; then
+    fail "custom skill bind mount missing from builder launch"
+  fi
+
+  echo "PASS: controller routes per-agent skills and custom skill bind mounts"
+}
+
+run_invalid_skill_bind_mount_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local mount_spec="$3"
+  local expected_error="$4"
+  local controller_log="${case_dir}/controller.log"
+  local run_log="${case_dir}/mock-state/docker-run.log"
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  if env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_SKILL_BIND_MOUNTS="${mount_spec}" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1; then
+    fail "controller succeeded unexpectedly for invalid skill bind mount: ${mount_spec}"
+  fi
+
+  assert_file_contains "$controller_log" "$expected_error"
+  if [ -f "$run_log" ] && [ -s "$run_log" ]; then
+    fail "controller should reject invalid skill bind mounts before docker run"
+  fi
+
+  echo "PASS: invalid skill bind mount rejected (${mount_spec})"
 }
 
 run_custom_prompt_companion_base_case() {
@@ -513,10 +744,12 @@ run_failure_case() {
   local repo_root="$1"
   local case_dir="$2"
   local codex_auth_source="${case_dir}/secrets/codex-auth.json"
+  local gemini_auth_dir="${case_dir}/secrets/gemini-auth"
 
   mkdir -p "$case_dir"
   mkdir -p "${case_dir}/secrets"
   printf '{"access_token":"test-token"}\n' > "$codex_auth_source"
+  seed_gemini_auth_dir "$gemini_auth_dir"
   setup_mock_docker "${case_dir}/mock-bin"
 
   if env -i \
@@ -533,6 +766,7 @@ run_failure_case() {
     AGENT_GITHUB_TOKEN_01="token-1" \
     AGENT_TIMEOUT_SECONDS="90" \
     CODEX_AUTH_FILE="${codex_auth_source}" \
+    GEMINI_AUTH_DIR="${gemini_auth_dir}" \
     PERIODIC_INTERVAL_SECS="60" \
     PERIODIC_JITTER_SECS="0" \
     bash "${repo_root}/scripts/controller.sh"; then
@@ -551,6 +785,7 @@ run_failure_case() {
   assert_file_contains "${summary_files[0]}" "status=failed"
   assert_file_contains "${summary_files[0]}" "exit_code=17"
   assert_no_codex_auth_residue "${case_dir}/workspace/homes"
+  assert_no_gemini_auth_residue "${case_dir}/workspace/homes"
 
   echo "PASS: failure case records failed sentinel with exit code"
 }
@@ -559,10 +794,12 @@ run_spawn_failure_cleanup_case() {
   local repo_root="$1"
   local case_dir="$2"
   local codex_auth_source="${case_dir}/secrets/codex-auth.json"
+  local gemini_auth_dir="${case_dir}/secrets/gemini-auth"
 
   mkdir -p "$case_dir"
   mkdir -p "${case_dir}/secrets"
   printf '{"access_token":"test-token"}\n' > "$codex_auth_source"
+  seed_gemini_auth_dir "$gemini_auth_dir"
   setup_mock_docker "${case_dir}/mock-bin"
 
   if env -i \
@@ -579,6 +816,7 @@ run_spawn_failure_cleanup_case() {
     AGENT_GITHUB_TOKEN_01="token-1" \
     AGENT_TIMEOUT_SECONDS="90" \
     CODEX_AUTH_FILE="${codex_auth_source}" \
+    GEMINI_AUTH_DIR="${gemini_auth_dir}" \
     PERIODIC_INTERVAL_SECS="60" \
     PERIODIC_JITTER_SECS="0" \
     bash "${repo_root}/scripts/controller.sh"; then
@@ -586,8 +824,9 @@ run_spawn_failure_cleanup_case() {
   fi
 
   assert_no_codex_auth_residue "${case_dir}/workspace/homes"
+  assert_no_gemini_auth_residue "${case_dir}/workspace/homes"
 
-  echo "PASS: spawn failure cleanup removes copied Codex auth files"
+  echo "PASS: spawn failure cleanup removes copied provider auth files"
 }
 
 run_provider_secret_staging_case() {
@@ -893,14 +1132,18 @@ run_mentions_retry_after_failure_case() {
   local case_dir="$2"
   local run1_log=""
   local run2_log=""
+  local run3_log=""
   local watch_output=""
+  local retry_backoff_secs="300"
   local mention_failed_count=0
   local mention_completed_count=0
   local ack_log=""
   local ack_count=""
   local expected_ack_key="thread-retry:2026-02-20T04:21:00Z"
   local expected_state_file="${case_dir}/workspace/watch-state/worker.json"
+  local failed_file=""
   local summary_file=""
+  local -a failed_files=()
   local -a summary_files=()
 
   mkdir -p "$case_dir"
@@ -925,6 +1168,7 @@ run_mentions_retry_after_failure_case() {
     WORKER_IMAGE="hivemoot-agent:test" \
     WATCH_MENTIONS="1" \
     WATCH_POLL_INTERVAL="30" \
+    WATCH_TRIGGER_FAILURE_BACKOFF_SECS="${retry_backoff_secs}" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
     AGENT_TIMEOUT_SECONDS="120" \
@@ -933,6 +1177,12 @@ run_mentions_retry_after_failure_case() {
     bash "${repo_root}/scripts/controller.sh" >"$run1_log" 2>&1; then
     fail "first controller run unexpectedly succeeded in mention retry case"
   fi
+
+  shopt -s nullglob
+  failed_files=("${case_dir}/workspace"/queue/*.failed)
+  shopt -u nullglob
+  assert_eq "1" "${#failed_files[@]}" "expected one failed queue artifact after initial failure"
+  failed_file="${failed_files[0]}"
 
   run2_log="${case_dir}/controller-run2.log"
   env -i \
@@ -950,6 +1200,7 @@ run_mentions_retry_after_failure_case() {
     WORKER_IMAGE="hivemoot-agent:test" \
     WATCH_MENTIONS="1" \
     WATCH_POLL_INTERVAL="30" \
+    WATCH_TRIGGER_FAILURE_BACKOFF_SECS="${retry_backoff_secs}" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
     AGENT_TIMEOUT_SECONDS="120" \
@@ -957,8 +1208,37 @@ run_mentions_retry_after_failure_case() {
     PERIODIC_JITTER_SECS="0" \
     bash "${repo_root}/scripts/controller.sh" >"$run2_log" 2>&1
 
-  assert_file_contains "$run2_log" "worker: queued mention trigger for #88"
-  assert_file_not_contains "$run2_log" "duplicate mention suppressed (ack_key=${expected_ack_key})"
+  assert_file_contains "$run2_log" "duplicate mention suppressed (ack_key=${expected_ack_key})"
+  assert_file_not_contains "$run2_log" "worker: queued mention trigger for #88"
+
+  touch -t 202001010000 "$failed_file"
+
+  run3_log="${case_dir}/controller-run3.log"
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="0" \
+    MOCK_DOCKER_WAIT_EXIT="0" \
+    MOCK_HIVEMOOT_STATE_DIR="${case_dir}/hivemoot-state" \
+    MOCK_HIVEMOOT_WATCH_OUTPUT="${watch_output}" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    WATCH_MENTIONS="1" \
+    WATCH_POLL_INTERVAL="30" \
+    WATCH_TRIGGER_FAILURE_BACKOFF_SECS="${retry_backoff_secs}" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$run3_log" 2>&1
+
+  assert_file_contains "$run3_log" "worker: queued mention trigger for #88"
+  assert_file_not_contains "$run3_log" "duplicate mention suppressed (ack_key=${expected_ack_key})"
 
   shopt -s nullglob
   summary_files=("${case_dir}/workspace"/workspaces/*/.hivemoot/summary)
@@ -985,7 +1265,7 @@ run_mentions_retry_after_failure_case() {
   assert_eq "1" "$ack_count" "expected exactly one ack after retry success"
   assert_file_contains "$ack_log" "${expected_ack_key}|${expected_state_file}"
 
-  echo "PASS: failed mention jobs are retried on re-emitted events"
+  echo "PASS: failed mention jobs back off before retrying re-emitted events"
 }
 
 run_task_watch_case() {
@@ -1027,6 +1307,7 @@ run_task_watch_case() {
   assert_file_contains "$run_log" "-e RUN_MODE=task"
   assert_file_contains "$run_log" "-e TARGET_REPO=owner/claimed"
   assert_file_contains "$run_log" "-e AGENT_TASK_ID=task-claim-1"
+  assert_file_contains "$run_log" "-e AGENT_SESSION_KEY=task:task-claim-1"
   assert_file_contains "$run_log" "-e AGENT_TASK_PROMPT=Inspect queue behavior"
   assert_file_contains "$run_log" "-e AGENT_TASK_MESSAGES_FILE=/workspace/task-input/task-claim-1/messages.json"
   assert_file_contains "$run_log" "-e AGENT_TASK_CLAIM_TOKEN=claim-token-1"
@@ -1052,6 +1333,54 @@ run_task_watch_case() {
   assert_file_contains "${summary_files[0]}" "trigger=task"
 
   echo "PASS: task-watch mode claims and runs delegated tasks"
+}
+
+run_task_watch_linux_permission_repair_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local chown_log=""
+  local task_input_dir=""
+  local -a messages_files=()
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+  setup_mock_uname_linux "${case_dir}/mock-bin"
+  setup_mock_chown_logger "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="0" \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    MOCK_CHOWN_STATE_DIR="${case_dir}/chown-state" \
+    CONTROLLER_RUN_MODE="once" \
+    WATCH_TASKS="1" \
+    TASK_DISPATCH_AGENT_IDS="worker" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    HIVEMOOT_AGENT_TOKEN="shared-token" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh"
+
+  shopt -s nullglob
+  messages_files=("${case_dir}/workspace"/workspaces/*/task-input/task-claim-1/messages.json)
+  shopt -u nullglob
+  assert_eq "1" "${#messages_files[@]}" "expected one task messages file for Linux permission repair case"
+
+  task_input_dir="$(dirname "$(dirname "${messages_files[0]}")")"
+  chown_log="${case_dir}/chown-state/chown.log"
+  [ -f "$chown_log" ] || fail "missing chown log in Linux permission repair case"
+  assert_file_contains "$chown_log" "-R 1000:1000 ${task_input_dir}"
+
+  echo "PASS: task-watch mode repairs Linux task-input ownership before worker start"
 }
 
 run_task_watch_token_file_case() {
@@ -1103,6 +1432,106 @@ run_task_watch_token_file_case() {
   assert_file_contains "$curl_log" "AUTH=Authorization: Bearer shared-token-from-file"
 
   echo "PASS: task-watch mode supports HIVEMOOT_AGENT_TOKEN_FILE without conflicts"
+}
+
+run_heartbeat_auth_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local expected_auth="$3"
+  shift 3
+  local -a auth_env=("$@")
+  local controller_pid=0
+  local controller_log=""
+  local curl_log=""
+  local deadline=0
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+
+  controller_log="${case_dir}/controller.log"
+  curl_log="${case_dir}/curl-state/curl.log"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="0" \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="loop" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    WATCH_MENTIONS="0" \
+    HEALTH_REPORT_URL="https://api.example.com/api/agent-health" \
+    HEARTBEAT_INTERVAL_SECS="1" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    "${auth_env[@]}" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1 &
+  controller_pid=$!
+
+  deadline=$((SECONDS + 20))
+  while true; do
+    if [ -f "$curl_log" ] && grep -Fq "AUTH=${expected_auth}" "$curl_log" 2>/dev/null; then
+      break
+    fi
+    if ! kill -0 "$controller_pid" 2>/dev/null; then
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "controller exited before heartbeat auth was observed"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      kill -TERM "$controller_pid" 2>/dev/null || true
+      wait "$controller_pid" 2>/dev/null || true
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "timed out waiting for heartbeat auth"
+    fi
+    sleep 0.1
+  done
+
+  kill -TERM "$controller_pid" 2>/dev/null || true
+  wait "$controller_pid" 2>/dev/null || true
+
+  [ -f "$curl_log" ] || fail "missing curl log in heartbeat auth case"
+  assert_file_contains "$curl_log" "URL=https://api.example.com/api/agent-health"
+  assert_file_contains "$curl_log" "AUTH=${expected_auth}"
+  assert_file_contains "$curl_log" '"outcome": "heartbeat"'
+}
+
+run_heartbeat_inline_token_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+
+  run_heartbeat_auth_case \
+    "$repo_root" \
+    "$case_dir" \
+    "Authorization: Bearer shared-token" \
+    "HIVEMOOT_AGENT_TOKEN=shared-token"
+
+  echo "PASS: controller heartbeats authenticate with HIVEMOOT_AGENT_TOKEN"
+}
+
+run_heartbeat_token_file_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local token_file=""
+
+  token_file="${case_dir}/secrets/hivemoot-agent-token"
+  mkdir -p "$(dirname "$token_file")"
+  printf '%s' 'shared-token-from-file' > "$token_file"
+  chmod 600 "$token_file"
+
+  run_heartbeat_auth_case \
+    "$repo_root" \
+    "$case_dir" \
+    "Authorization: Bearer shared-token-from-file" \
+    "HIVEMOOT_AGENT_TOKEN_FILE=${token_file}"
+
+  echo "PASS: controller heartbeats authenticate with HIVEMOOT_AGENT_TOKEN_FILE"
 }
 
 run_task_watch_no_task_case() {
@@ -1467,6 +1896,626 @@ run_shutdown_signal_case() {
   echo "PASS: shutdown blocks queued launches after signal (controller_exit=${controller_status})"
 }
 
+run_exit_trap_reaps_job_subshells_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_pid=0
+  local controller_status=0
+  local run_log=""
+  local deadline=0
+  local -a subshell_pids=()
+  local subshell_pid=""
+  local orphan_count=0
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  run_log="${case_dir}/mock-state/docker-run.log"
+
+  # Long docker wait ensures the job subshell is still alive when we
+  # trigger EXIT.  MOCK_DOCKER_WAIT_SLEEP_SECS=3 gives a clear window
+  # to send SIGHUP while the subshell is blocked in `docker wait`.
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="3" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"${case_dir}/controller.log" 2>&1 &
+  controller_pid=$!
+
+  # Wait for the first docker run to be issued, confirming the job
+  # subshell is alive and tracked in running_pids.
+  deadline=$((SECONDS + 15))
+  while true; do
+    if [ -f "$run_log" ] && [ "$(wc -l < "$run_log" | tr -d '[:space:]')" -ge 1 ]; then
+      break
+    fi
+    if ! kill -0 "$controller_pid" 2>/dev/null; then
+      sed 's/^/  /' "${case_dir}/controller.log" >&2 || true
+      fail "controller exited before first launch in exit-trap reap case"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      sed 's/^/  /' "${case_dir}/controller.log" >&2 || true
+      fail "timed out waiting for first worker launch in exit-trap reap case"
+    fi
+    sleep 0.1
+  done
+
+  # Capture direct bash child PIDs before triggering exit.  Job subshells
+  # spawned via `( run_job ... ) &` are bash processes.  Transient children
+  # like `sleep` or `docker` are excluded to avoid false-positive orphan
+  # checks for processes not tracked in running_pids.
+  local candidate_pid=""
+  local candidate_comm=""
+  while IFS= read -r candidate_pid; do
+    [ -n "$candidate_pid" ] || continue
+    candidate_comm="$(ps -p "$candidate_pid" -o comm= 2>/dev/null || true)"
+    [ "$candidate_comm" = "bash" ] && subshell_pids+=("$candidate_pid")
+  done < <(pgrep -P "$controller_pid" 2>/dev/null || true)
+
+  [ "${#subshell_pids[@]}" -gt 0 ] || fail "no bash job subshell PIDs found after first launch"
+
+  # Send SIGHUP — bash runs EXIT traps for untrapped SIGHUP, exercising
+  # cleanup() directly without going through handle_shutdown().
+  kill -HUP "$controller_pid"
+
+  # Controller must exit within a generous timeout.
+  deadline=$((SECONDS + 15))
+  while kill -0 "$controller_pid" 2>/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      kill -KILL "$controller_pid" 2>/dev/null || true
+      fail "controller did not exit after SIGHUP in exit-trap reap case"
+    fi
+    sleep 0.1
+  done
+
+  if wait "$controller_pid"; then
+    controller_status=0
+  else
+    controller_status=$?
+  fi
+
+  # All tracked job subshell PIDs must be reaped — none should still be alive.
+  orphan_count=0
+  for subshell_pid in "${subshell_pids[@]}"; do
+    if kill -0 "$subshell_pid" 2>/dev/null; then
+      orphan_count=$((orphan_count + 1))
+      echo "  orphan PID still alive: ${subshell_pid}" >&2
+      kill -KILL "$subshell_pid" 2>/dev/null || true
+    fi
+  done
+
+  assert_eq "0" "$orphan_count" "tracked job subshell(s) must be reaped by EXIT trap cleanup"
+
+  echo "PASS: EXIT trap cleanup reaps tracked job subshells (controller_exit=${controller_status})"
+}
+
+run_global_slots_cross_controller_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_a_pid=""
+  local controller_b_pid=""
+  local controller_a_status=0
+  local controller_b_status=0
+  local controller_a_log="${case_dir}/controller-a.log"
+  local controller_b_log="${case_dir}/controller-b.log"
+  local run_log="${case_dir}/mock-state/docker-run.log"
+  local overlap_file="${case_dir}/mock-state/overlap.log"
+  local launch_count=""
+  local deadline=0
+
+  mkdir -p "${case_dir}/global-slots"
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home-a" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="2" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    GLOBAL_MAX_WORKERS="1" \
+    GLOBAL_SLOTS_DIR="${case_dir}/global-slots" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace-a" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_a_log" 2>&1 &
+  controller_a_pid=$!
+
+  deadline=$((SECONDS + 15))
+  while true; do
+    if [ -f "$run_log" ] && [ "$(wc -l < "$run_log" | tr -d '[:space:]')" -ge 1 ]; then
+      break
+    fi
+    if ! kill -0 "$controller_a_pid" 2>/dev/null; then
+      sed 's/^/  /' "$controller_a_log" >&2 || true
+      fail "controller A exited before first worker launch in global-slots case"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      sed 's/^/  /' "$controller_a_log" >&2 || true
+      fail "timed out waiting for controller A to launch its worker"
+    fi
+    sleep 0.1
+  done
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home-b" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="2" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    GLOBAL_MAX_WORKERS="1" \
+    GLOBAL_SLOTS_DIR="${case_dir}/global-slots" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace-b" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="builder" \
+    AGENT_GITHUB_TOKEN_01="token-2" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_b_log" 2>&1 &
+  controller_b_pid=$!
+
+  if wait "$controller_a_pid"; then
+    controller_a_status=0
+  else
+    controller_a_status=$?
+  fi
+  if wait "$controller_b_pid"; then
+    controller_b_status=0
+  else
+    controller_b_status=$?
+  fi
+
+  if [ "$controller_a_status" -ne 0 ]; then
+    sed 's/^/  /' "$controller_a_log" >&2 || true
+    fail "controller A failed in global-slots case"
+  fi
+  if [ "$controller_b_status" -ne 0 ]; then
+    sed 's/^/  /' "$controller_b_log" >&2 || true
+    fail "controller B failed in global-slots case"
+  fi
+
+  [ -f "$run_log" ] || fail "missing docker run log in global-slots case"
+  launch_count="$(wc -l < "$run_log" | tr -d '[:space:]')"
+  assert_eq "2" "$launch_count" "expected each controller to launch exactly one worker"
+  if [ -f "$overlap_file" ] && [ -s "$overlap_file" ]; then
+    sed 's/^/  /' "$overlap_file" >&2 || true
+    fail "global slot semaphore should prevent overlapping worker launches across controllers"
+  fi
+
+  assert_file_contains "$controller_a_log" "Global worker slots enabled: count=1"
+  assert_file_contains "$controller_b_log" "Global worker slots enabled: count=1"
+
+  echo "PASS: global slot semaphore limits combined concurrency across controllers"
+}
+
+run_global_slot_mention_timeout_requeue_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_log="${case_dir}/controller.log"
+  local controller_pid=""
+  local controller_status=0
+  local holder_pid=""
+  local deadline=0
+  local -a requeued=()
+  local -a failed=()
+
+  mkdir -p "${case_dir}/workspace/queue" "${case_dir}/global-slots"
+  : > "${case_dir}/global-slots/slot-1.lock"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_hivemoot "${case_dir}/mock-bin"
+
+  cat > "${case_dir}/workspace/queue/mention-timeout.trigger.json" <<EOF_TRIGGER
+{
+  "trigger_type": "mention",
+  "repo": "owner/repo",
+  "agent_id": "worker",
+  "extra_prompt": "Global slot timeout mention",
+  "ack_key": "thread-timeout:2026-03-16T00:00:00Z",
+  "state_file": "${case_dir}/workspace/watch-state/worker.json",
+  "session_key": "mention-thread:thread-timeout"
+}
+EOF_TRIGGER
+
+  (
+    exec 9>>"${case_dir}/global-slots/slot-1.lock"
+    flock 9
+    sleep 5
+  ) &
+  holder_pid=$!
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_HIVEMOOT_STATE_DIR="${case_dir}/hivemoot-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="loop" \
+    CONTROLLER_MAX_WORKERS="1" \
+    GLOBAL_MAX_WORKERS="1" \
+    GLOBAL_SLOTS_DIR="${case_dir}/global-slots" \
+    GLOBAL_SLOT_TIMEOUT_MENTION_SECS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    WATCH_MENTIONS="1" \
+    WATCH_POLL_INTERVAL="30" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1 &
+  controller_pid=$!
+
+  deadline=$((SECONDS + 20))
+  while true; do
+    if grep -Fq "Global slot timeout (1s); re-queued mention trigger" "$controller_log" 2>/dev/null; then
+      break
+    fi
+    if ! kill -0 "$controller_pid" 2>/dev/null; then
+      kill "$holder_pid" 2>/dev/null || true
+      wait "$holder_pid" 2>/dev/null || true
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "controller exited before mention global-slot timeout was observed"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      kill -TERM "$controller_pid" 2>/dev/null || true
+      wait "$controller_pid" 2>/dev/null || true
+      kill "$holder_pid" 2>/dev/null || true
+      wait "$holder_pid" 2>/dev/null || true
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "timed out waiting for mention global-slot timeout"
+    fi
+    sleep 0.1
+  done
+
+  kill -TERM "$controller_pid" 2>/dev/null || true
+  if wait "$controller_pid"; then
+    controller_status=0
+  else
+    controller_status=$?
+  fi
+
+  if [ "$controller_status" -ne 0 ] && [ "$controller_status" -ne 143 ]; then
+    kill "$holder_pid" 2>/dev/null || true
+    wait "$holder_pid" 2>/dev/null || true
+    sed 's/^/  /' "$controller_log" >&2 || true
+    fail "controller failed in global-slot mention timeout case"
+  fi
+
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  shopt -s nullglob
+  requeued=("${case_dir}/workspace/queue/"*.trigger.json)
+  failed=("${case_dir}/workspace/queue/"*.failed)
+  shopt -u nullglob
+
+  if [ "${#requeued[@]}" -ne 1 ]; then
+    fail "expected timed-out mention to be re-queued exactly once (found ${#requeued[@]})"
+  fi
+  assert_eq "0" "${#failed[@]}" "timed-out mention must not be finalized as failed"
+  assert_file_contains "$controller_log" "Global slot timeout (1s); re-queued mention trigger"
+
+  if [ -f "${case_dir}/mock-state/docker-run.log" ] && [ -s "${case_dir}/mock-state/docker-run.log" ]; then
+    fail "mention timeout case should not launch a worker when the global slot is unavailable"
+  fi
+
+  echo "PASS: mention timeout re-queues trigger when the global slot stays busy (controller_exit=${controller_status})"
+}
+
+run_global_slot_mention_timeout_missing_run_dir_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_log="${case_dir}/controller.log"
+  local controller_pid=""
+  local controller_status=0
+  local holder_pid=""
+  local run_dir_reaper_pid=""
+  local run_dir_reaper_status=0
+  local deadline=0
+  local run_dir=""
+  local -a requeued=()
+  local -a failed=()
+
+  mkdir -p "${case_dir}/workspace/queue" "${case_dir}/global-slots"
+  : > "${case_dir}/global-slots/slot-1.lock"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_hivemoot "${case_dir}/mock-bin"
+
+  cat > "${case_dir}/workspace/queue/mention-timeout.trigger.json" <<EOF_TRIGGER
+{
+  "trigger_type": "mention",
+  "repo": "owner/repo",
+  "agent_id": "worker",
+  "extra_prompt": "Global slot timeout mention missing run dir",
+  "ack_key": "thread-timeout-missing-run-dir:2026-03-16T00:00:00Z",
+  "state_file": "${case_dir}/workspace/watch-state/worker.json",
+  "session_key": "mention-thread:thread-timeout-missing-run-dir"
+}
+EOF_TRIGGER
+
+  (
+    exec 9>>"${case_dir}/global-slots/slot-1.lock"
+    flock 9
+    sleep 5
+  ) &
+  holder_pid=$!
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_HIVEMOOT_STATE_DIR="${case_dir}/hivemoot-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="loop" \
+    CONTROLLER_MAX_WORKERS="1" \
+    GLOBAL_MAX_WORKERS="1" \
+    GLOBAL_SLOTS_DIR="${case_dir}/global-slots" \
+    GLOBAL_SLOT_TIMEOUT_MENTION_SECS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    WATCH_MENTIONS="1" \
+    WATCH_POLL_INTERVAL="30" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1 &
+  controller_pid=$!
+
+  (
+    deadline=$((SECONDS + 20))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+      run_dir="$(find "${case_dir}/workspace/runs" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null || true)"
+      if [ -n "$run_dir" ]; then
+        rm -rf "$run_dir"
+        exit 0
+      fi
+      sleep 0.05
+    done
+    exit 1
+  ) &
+  run_dir_reaper_pid=$!
+
+  deadline=$((SECONDS + 20))
+  while true; do
+    if grep -Fq "Global slot timeout (1s); re-queued mention trigger" "$controller_log" 2>/dev/null; then
+      break
+    fi
+    if ! kill -0 "$controller_pid" 2>/dev/null; then
+      kill "$holder_pid" 2>/dev/null || true
+      wait "$holder_pid" 2>/dev/null || true
+      wait "$run_dir_reaper_pid" 2>/dev/null || true
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "controller exited before missing-run-dir mention timeout was observed"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      kill -TERM "$controller_pid" 2>/dev/null || true
+      wait "$controller_pid" 2>/dev/null || true
+      kill "$holder_pid" 2>/dev/null || true
+      wait "$holder_pid" 2>/dev/null || true
+      wait "$run_dir_reaper_pid" 2>/dev/null || true
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "timed out waiting for missing-run-dir mention timeout"
+    fi
+    sleep 0.1
+  done
+
+  if wait "$run_dir_reaper_pid"; then
+    run_dir_reaper_status=0
+  else
+    run_dir_reaper_status=$?
+  fi
+
+  kill -TERM "$controller_pid" 2>/dev/null || true
+  if wait "$controller_pid"; then
+    controller_status=0
+  else
+    controller_status=$?
+  fi
+
+  if [ "$controller_status" -ne 0 ] && [ "$controller_status" -ne 143 ]; then
+    kill "$holder_pid" 2>/dev/null || true
+    wait "$holder_pid" 2>/dev/null || true
+    sed 's/^/  /' "$controller_log" >&2 || true
+    fail "controller failed in missing-run-dir mention timeout case"
+  fi
+
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  assert_eq "0" "$run_dir_reaper_status" "expected test helper to remove the job run directory before timeout handling"
+
+  shopt -s nullglob
+  requeued=("${case_dir}/workspace/queue/"*.trigger.json)
+  failed=("${case_dir}/workspace/queue/"*.failed)
+  shopt -u nullglob
+
+  if [ "${#requeued[@]}" -ne 1 ]; then
+    fail "expected timed-out mention to be re-queued exactly once after removing the run directory (found ${#requeued[@]})"
+  fi
+  assert_eq "0" "${#failed[@]}" "timed-out mention must not be finalized as failed when the run directory disappears"
+  assert_file_contains "$controller_log" "Global slot timeout (1s); re-queued mention trigger"
+
+  if [ -f "${case_dir}/mock-state/docker-run.log" ] && [ -s "${case_dir}/mock-state/docker-run.log" ]; then
+    fail "missing-run-dir timeout case should not launch a worker when the global slot is unavailable"
+  fi
+
+  echo "PASS: mention timeout re-queues trigger even if the job run directory is removed before timeout handling (controller_exit=${controller_status})"
+}
+
+run_global_slot_periodic_timeout_cleanup_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_pid=""
+  local controller_status=0
+  local controller_log="${case_dir}/controller.log"
+  local holder_pid=""
+  local deadline=0
+  local -a processing_files=()
+  local -a done_files=()
+
+  mkdir -p "${case_dir}/workspace/queue" "${case_dir}/global-slots"
+  : > "${case_dir}/global-slots/slot-1.lock"
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  (
+    exec 9>>"${case_dir}/global-slots/slot-1.lock"
+    flock 9
+    sleep 5
+  ) &
+  holder_pid=$!
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="loop" \
+    CONTROLLER_MAX_WORKERS="1" \
+    GLOBAL_MAX_WORKERS="1" \
+    GLOBAL_SLOTS_DIR="${case_dir}/global-slots" \
+    GLOBAL_SLOT_TIMEOUT_PERIODIC_SECS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    WATCH_MENTIONS="0" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="1" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1 &
+  controller_pid=$!
+
+  deadline=$((SECONDS + 20))
+  while true; do
+    if grep -Fq "Global slot timeout (1s); skipping periodic trigger" "$controller_log" 2>/dev/null; then
+      break
+    fi
+    if ! kill -0 "$controller_pid" 2>/dev/null; then
+      kill "$holder_pid" 2>/dev/null || true
+      wait "$holder_pid" 2>/dev/null || true
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "controller exited before periodic global-slot timeout was observed"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      kill -TERM "$controller_pid" 2>/dev/null || true
+      wait "$controller_pid" 2>/dev/null || true
+      kill "$holder_pid" 2>/dev/null || true
+      wait "$holder_pid" 2>/dev/null || true
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "timed out waiting for periodic global-slot timeout"
+    fi
+    sleep 0.1
+  done
+
+  kill -TERM "$controller_pid" 2>/dev/null || true
+  if wait "$controller_pid"; then
+    controller_status=0
+  else
+    controller_status=$?
+  fi
+
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  shopt -s nullglob
+  processing_files=("${case_dir}/workspace"/queue/*.processing)
+  done_files=("${case_dir}/workspace"/queue/*.done)
+  shopt -u nullglob
+
+  assert_eq "0" "${#processing_files[@]}" "expected no lingering .processing files after periodic global-slot timeout"
+  if [ "${#done_files[@]}" -lt 1 ]; then
+    fail "expected at least one finalized .done artifact after periodic global-slot timeout"
+  fi
+
+  if [ -f "${case_dir}/mock-state/docker-run.log" ] && [ -s "${case_dir}/mock-state/docker-run.log" ]; then
+    fail "periodic timeout case should not launch a worker while the global slot is held"
+  fi
+
+  echo "PASS: periodic timeout finalizes queue artifacts cleanly (controller_exit=${controller_status})"
+}
+
+run_task_global_slot_timeout_report_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local holder_pid=""
+  local curl_log=""
+
+  mkdir -p "${case_dir}/global-slots"
+  : > "${case_dir}/global-slots/slot-1.lock"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+
+  (
+    exec 9>>"${case_dir}/global-slots/slot-1.lock"
+    flock 9
+    sleep 5
+  ) &
+  holder_pid=$!
+
+  if ! env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    CONTROLLER_RUN_MODE="once" \
+    WATCH_TASKS="1" \
+    TASK_DISPATCH_AGENT_IDS="worker" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    HIVEMOOT_AGENT_TOKEN="shared-token" \
+    CONTROLLER_MAX_WORKERS="1" \
+    GLOBAL_MAX_WORKERS="1" \
+    GLOBAL_SLOTS_DIR="${case_dir}/global-slots" \
+    GLOBAL_SLOT_TIMEOUT_TASK_SECS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    bash "${repo_root}/scripts/controller.sh"; then
+    kill "$holder_pid" 2>/dev/null || true
+    wait "$holder_pid" 2>/dev/null || true
+    fail "controller failed in task global-slot timeout case"
+  fi
+
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  curl_log="${case_dir}/curl-state/curl.log"
+  [ -f "$curl_log" ] || fail "missing curl log in task global-slot timeout case"
+  assert_file_contains "$curl_log" "URL=https://api.example.com/api/tasks/claim"
+  assert_file_contains "$curl_log" "URL=https://api.example.com/api/tasks/task-claim-1/execute"
+  assert_file_contains "$curl_log" "Timed out waiting 1s for a global worker slot"
+  assert_file_contains "$curl_log" "AUTH=Authorization: Bearer shared-token"
+
+  if [ -f "${case_dir}/mock-state/docker-run.log" ] && [ -s "${case_dir}/mock-state/docker-run.log" ]; then
+    fail "task timeout case should not launch a worker when the global slot stays busy"
+  fi
+
+  echo "PASS: task timeout reports capacity failure when the global slot stays busy"
+}
+
 run_same_agent_concurrent_case() {
   local repo_root="$1"
   local case_dir="$2"
@@ -1664,6 +2713,62 @@ run_task_failure_report_case() {
   echo "PASS: task failure is reported to execute endpoint when worker exits non-zero"
 }
 
+run_task_failure_report_classified_error_case() {
+  # When the worker container exits non-zero and the container log contains a
+  # known error pattern from run-once.sh, the controller should include a
+  # classified (safe, pre-defined) error message in the action=fail payload
+  # instead of the generic "Worker exited with code N".
+  local repo_root="$1"
+  local case_dir="$2"
+  local curl_log=""
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+
+  # Inject a known run-once.sh error pattern into the mock container log.
+  # The classifier should recognize "Missing GitHub token" and return the
+  # safe classified message. The raw log text must NOT appear in the payload.
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_EXIT="1" \
+    MOCK_DOCKER_LOG_CONTENT="Missing GitHub token. Set AGENT_GITHUB_TOKEN_FILE or AGENT_GITHUB_TOKEN (or GITHUB_TOKEN/GH_TOKEN)." \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    CONTROLLER_RUN_MODE="once" \
+    WATCH_TASKS="1" \
+    TASK_DISPATCH_AGENT_IDS="worker" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    HIVEMOOT_AGENT_TOKEN="shared-token" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    bash "${repo_root}/scripts/controller.sh" || true
+
+  curl_log="${case_dir}/curl-state/curl.log"
+  [ -f "$curl_log" ] || fail "missing curl log in task-failure-report-classified case"
+
+  # The fail payload must contain the classified message, not the generic one.
+  assert_file_contains "$curl_log" "GitHub token is missing"
+
+  # The raw log content must not be forwarded in the payload.
+  if grep -qF "Set AGENT_GITHUB_TOKEN_FILE" "$curl_log" 2>/dev/null; then
+    fail "raw log content must not appear in the task failure payload"
+  fi
+
+  # Generic fallback must NOT appear when classification succeeded.
+  if grep -qF "Worker exited with code" "$curl_log" 2>/dev/null; then
+    fail "generic error message must not appear when log was successfully classified"
+  fi
+
+  echo "PASS: controller classifies worker log and includes structured error in task fail payload"
+}
+
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmpdir="$(mktemp -d "${repo_root}/.tmp-controller-test.XXXXXX")"
@@ -1671,6 +2776,22 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 echo "Running controller script checks"
 run_success_case "$repo_root" "${tmpdir}/success"
+run_per_agent_skill_routing_case "$repo_root" "${tmpdir}/per-agent-skill-routing"
+run_invalid_skill_bind_mount_case \
+  "$repo_root" \
+  "${tmpdir}/invalid-skill-bind-mount-traversal" \
+  "${tmpdir}/custom-skill:/opt/hivemoot-agent/skills/../../etc:ro" \
+  "AGENT_SKILL_BIND_MOUNTS contains path traversal:"
+run_invalid_skill_bind_mount_case \
+  "$repo_root" \
+  "${tmpdir}/invalid-skill-bind-mount-relative" \
+  "relative-skill:/opt/hivemoot-agent/skills/skill-one:ro" \
+  "AGENT_SKILL_BIND_MOUNTS contains invalid mount spec:"
+run_invalid_skill_bind_mount_case \
+  "$repo_root" \
+  "${tmpdir}/invalid-skill-bind-mount-destination" \
+  "${tmpdir}/custom-skill:/opt/hivemoot-agent/custom-skills/skill-one:ro" \
+  "AGENT_SKILL_BIND_MOUNTS contains invalid mount spec:"
 run_custom_prompt_companion_base_case "$repo_root" "${tmpdir}/custom-prompt-companion-base"
 run_failure_case "$repo_root" "${tmpdir}/failure"
 run_spawn_failure_cleanup_case "$repo_root" "${tmpdir}/spawn-failure"
@@ -1681,7 +2802,10 @@ run_mentions_dedup_case "$repo_root" "${tmpdir}/mentions-dedup"
 run_orphan_recovery_case "$repo_root" "${tmpdir}/orphan-recovery"
 run_mentions_retry_after_failure_case "$repo_root" "${tmpdir}/mentions-retry"
 run_task_watch_case "$repo_root" "${tmpdir}/task-watch"
+run_task_watch_linux_permission_repair_case "$repo_root" "${tmpdir}/task-watch-linux-permissions"
 run_task_watch_token_file_case "$repo_root" "${tmpdir}/task-watch-token-file"
+run_heartbeat_inline_token_case "$repo_root" "${tmpdir}/heartbeat-inline-token"
+run_heartbeat_token_file_case "$repo_root" "${tmpdir}/heartbeat-token-file"
 run_task_watch_no_task_case "$repo_root" "${tmpdir}/task-watch-empty"
 run_task_watch_invalid_repo_case "$repo_root" "${tmpdir}/task-watch-invalid-repo"
 run_task_watch_scope_validation_case "$repo_root" "${tmpdir}/task-watch-scope-validation"
@@ -1689,7 +2813,14 @@ run_workspace_prune_case "$repo_root" "${tmpdir}/workspace-prune"
 run_workspace_ttl_disabled_case "$repo_root" "${tmpdir}/workspace-ttl-disabled"
 run_workspace_prune_failure_reporting_case "$repo_root" "${tmpdir}/workspace-prune-failure-reporting"
 run_shutdown_signal_case "$repo_root" "${tmpdir}/shutdown"
+run_exit_trap_reaps_job_subshells_case "$repo_root" "${tmpdir}/exit-trap-reap"
+run_global_slots_cross_controller_case "$repo_root" "${tmpdir}/global-slots-cross-controller"
+run_global_slot_mention_timeout_requeue_case "$repo_root" "${tmpdir}/global-slot-mention-timeout"
+run_global_slot_mention_timeout_missing_run_dir_case "$repo_root" "${tmpdir}/global-slot-mention-timeout-missing-run-dir"
+run_global_slot_periodic_timeout_cleanup_case "$repo_root" "${tmpdir}/global-slot-periodic-timeout"
+run_task_global_slot_timeout_report_case "$repo_root" "${tmpdir}/task-global-slot-timeout"
 run_same_agent_concurrent_case "$repo_root" "${tmpdir}/same-agent-concurrent"
 run_periodic_deferral_cleanup_case "$repo_root" "${tmpdir}/periodic-deferral-cleanup"
 run_task_failure_report_case "$repo_root" "${tmpdir}/task-failure-report"
+run_task_failure_report_classified_error_case "$repo_root" "${tmpdir}/task-failure-classified"
 echo "PASS: controller script checks"
