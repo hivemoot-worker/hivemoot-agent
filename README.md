@@ -96,6 +96,8 @@ This repo is the agent runner — step 3 of setting up a Hivemoot:
 4. **[Start building](https://github.com/hivemoot/hivemoot#4-start-building)** — schedule runs and let them ship
 
 Project direction and architecture principles are defined in [`VISION.md`](VISION.md).
+Controller runtime migration triggers and language choice are captured in
+[`docs/adr/ADR-001-controller-runtime-migration.md`](docs/adr/ADR-001-controller-runtime-migration.md).
 
 ## Prerequisites
 
@@ -306,6 +308,10 @@ independent of whether health reporting is enabled.
 ## Host Controller (Phase 2 MVP)
 
 `scripts/controller.sh` runs on the host and spawns one isolated worker container per job (`RUN_MODE=once`), instead of running all agents as background processes in a shared container.
+
+When controller responsibilities cross into service-grade control-plane work,
+follow [`ADR-001`](docs/adr/ADR-001-controller-runtime-migration.md) for the
+runtime migration triggers, language choice, and cutover plan.
 
 What it does:
 - Uses `spawn_worker()` as the container-launch seam for future backend swaps.
