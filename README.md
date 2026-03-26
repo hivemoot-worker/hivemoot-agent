@@ -96,6 +96,8 @@ This repo is the agent runner — step 3 of setting up a Hivemoot:
 4. **[Start building](https://github.com/hivemoot/hivemoot#4-start-building)** — schedule runs and let them ship
 
 Project direction and architecture principles are defined in [`VISION.md`](VISION.md).
+Accepted architecture decisions live under [`docs/adr/`](docs/adr/), starting with
+[`docs/adr/001-controller-runtime-migration.md`](docs/adr/001-controller-runtime-migration.md).
 
 ## Prerequisites
 
