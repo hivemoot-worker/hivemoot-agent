@@ -535,6 +535,94 @@ preflight_check_provider_auth() {
   return "$failures"
 }
 
+preflight_check_common() {
+  local provider="$1"
+  local auth_mode="${2:-auto}"
+  local prompt_file="$3"
+  local target_repo="$4"
+  local token_validation_mode="${5:-user_or_installation}"
+  local skills_dir="${6:-/opt/hivemoot-agent/skills}"
+  local failures=0
+
+  if ! command -v "$provider" >/dev/null 2>&1; then
+    echo "Pre-flight: ${provider} CLI is not installed in the container." >&2
+    failures=$((failures + 1))
+  fi
+
+  if [ ! -f "$prompt_file" ]; then
+    echo "Pre-flight: prompt file not found: ${prompt_file}" >&2
+    failures=$((failures + 1))
+  else
+    if ! resolve_companion_base_prompt "$prompt_file" >/dev/null; then
+      if prompt_requires_companion_base "$prompt_file"; then
+        echo "Pre-flight: base prompt file not found: $(dirname "$prompt_file")/base.md" >&2
+        failures=$((failures + 1))
+      fi
+    fi
+  fi
+
+  local skill_failures=0
+  preflight_check_agent_skill_lists "$skills_dir" || skill_failures=$?
+  failures=$((failures + skill_failures))
+
+  local auth_failures=0
+  preflight_check_provider_auth "$provider" "$auth_mode" || auth_failures=$?
+  failures=$((failures + auth_failures))
+
+  local index=""
+  for index in "${!agent_ids[@]}"; do
+    local aid="${agent_ids[$index]}"
+    local tok="${agent_tokens[$index]}"
+
+    case "$token_validation_mode" in
+      user_only)
+        if ! GH_TOKEN="$tok" gh api user --jq .login >/dev/null 2>&1; then
+          echo "Pre-flight: token for agent '${aid}' is not a valid user token (required for WATCH_MENTIONS=1)." >&2
+          failures=$((failures + 1))
+          continue
+        fi
+        ;;
+      user_or_installation)
+        if ! GH_TOKEN="$tok" gh api user --jq .login >/dev/null 2>&1; then
+          if ! GH_TOKEN="$tok" gh api installation --jq .id >/dev/null 2>&1; then
+            echo "Pre-flight: token for agent '${aid}' is invalid or expired." >&2
+            failures=$((failures + 1))
+            continue
+          fi
+        fi
+        ;;
+      *)
+        echo "preflight_check_common: unsupported token validation mode: ${token_validation_mode}" >&2
+        return 1
+        ;;
+    esac
+
+    if [ -n "$target_repo" ]; then
+      if ! GH_TOKEN="$tok" gh api "repos/${target_repo}" --jq .full_name >/dev/null 2>&1; then
+        echo "Pre-flight: token for agent '${aid}' cannot access ${target_repo}." >&2
+        failures=$((failures + 1))
+      fi
+    fi
+  done
+
+  return "$failures"
+}
+
+finish_preflight_check() {
+  local failures="$1"
+  local provider="$2"
+  local auth_mode="$3"
+  local target_repo="$4"
+  local agent_count="$5"
+
+  if [ "$failures" -gt 0 ]; then
+    echo "Pre-flight: ${failures} check(s) failed. Fix the above errors and retry." >&2
+    exit 1
+  fi
+
+  log "Pre-flight: all checks passed (provider=${provider} auth=${auth_mode} repo=${target_repo} agents=${agent_count})"
+}
+
 prepare_hivemoot_cli() {
   local update_mode="${HIVEMOOT_CLI_UPDATE:-auto}"
   local spec="@hivemoot-dev/cli@${HIVEMOOT_CLI_VERSION:-latest}"
