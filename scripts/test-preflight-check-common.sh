@@ -14,6 +14,41 @@ pass() {
   echo "PASS: $*"
 }
 
+make_exec_workdir() {
+  local candidate
+  local workdir
+  local probe
+
+  for candidate in "${TMPDIR:-}" "${HOME:-}" /var/tmp /tmp "$REPO_ROOT"; do
+    if [ -z "$candidate" ] || [ ! -d "$candidate" ]; then
+      continue
+    fi
+
+    workdir="$(mktemp -d "${candidate%/}/.tmp-preflight-test.XXXXXX" 2>/dev/null || true)"
+    if [ -z "$workdir" ]; then
+      continue
+    fi
+
+    probe="${workdir}/exec-probe.sh"
+    cat > "$probe" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod +x "$probe"
+
+    if "$probe" >/dev/null 2>&1; then
+      rm -f "$probe"
+      printf '%s\n' "$workdir"
+      return 0
+    fi
+
+    rm -rf "$workdir"
+  done
+
+  echo "unable to allocate an exec-capable temporary workdir" >&2
+  return 1
+}
+
 setup_env() {
   local workdir="$1"
   local mock_bin="${workdir}/mock-bin"
@@ -77,7 +112,7 @@ make_agent_globals() {
 
 test_passes_with_valid_inputs() {
   local workdir
-  workdir="$(mktemp -d "${REPO_ROOT}/.tmp-preflight-test.XXXXXX")"
+  workdir="$(make_exec_workdir)" || fail "could not create exec-capable workdir"
   trap 'rm -rf "$workdir"' EXIT
 
   setup_env "$workdir"
@@ -98,7 +133,7 @@ test_passes_with_valid_inputs() {
 
 test_fails_missing_provider_cli() {
   local workdir
-  workdir="$(mktemp -d "${REPO_ROOT}/.tmp-preflight-test.XXXXXX")"
+  workdir="$(make_exec_workdir)" || fail "could not create exec-capable workdir"
   trap 'rm -rf "$workdir"' EXIT
 
   setup_env "$workdir"
@@ -131,7 +166,7 @@ test_fails_missing_provider_cli() {
 
 test_fails_missing_prompt_file() {
   local workdir
-  workdir="$(mktemp -d "${REPO_ROOT}/.tmp-preflight-test.XXXXXX")"
+  workdir="$(make_exec_workdir)" || fail "could not create exec-capable workdir"
   trap 'rm -rf "$workdir"' EXIT
 
   setup_env "$workdir"
@@ -152,7 +187,7 @@ test_fails_missing_prompt_file() {
 
 test_requires_hivemoot_cli_when_flag_set() {
   local workdir
-  workdir="$(mktemp -d "${REPO_ROOT}/.tmp-preflight-test.XXXXXX")"
+  workdir="$(make_exec_workdir)" || fail "could not create exec-capable workdir"
   trap 'rm -rf "$workdir"' EXIT
 
   setup_env "$workdir"
@@ -184,7 +219,7 @@ test_requires_hivemoot_cli_when_flag_set() {
 
 test_does_not_require_hivemoot_cli_when_flag_unset() {
   local workdir
-  workdir="$(mktemp -d "${REPO_ROOT}/.tmp-preflight-test.XXXXXX")"
+  workdir="$(make_exec_workdir)" || fail "could not create exec-capable workdir"
   trap 'rm -rf "$workdir"' EXIT
 
   setup_env "$workdir"
@@ -216,7 +251,7 @@ test_does_not_require_hivemoot_cli_when_flag_unset() {
 
 test_watch_mentions_rejects_non_user_token() {
   local workdir
-  workdir="$(mktemp -d "${REPO_ROOT}/.tmp-preflight-test.XXXXXX")"
+  workdir="$(make_exec_workdir)" || fail "could not create exec-capable workdir"
   trap 'rm -rf "$workdir"' EXIT
 
   setup_env "$workdir"
@@ -252,7 +287,7 @@ EOF
 
 test_return_code_correct_with_many_failures() {
   local workdir
-  workdir="$(mktemp -d "${REPO_ROOT}/.tmp-preflight-test.XXXXXX")"
+  workdir="$(make_exec_workdir)" || fail "could not create exec-capable workdir"
   trap 'rm -rf "$workdir"' EXIT
 
   setup_env "$workdir"
