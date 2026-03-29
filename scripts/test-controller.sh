@@ -597,6 +597,42 @@ run_success_case() {
   echo "PASS: success case writes expected spawn flags and job artifacts"
 }
 
+run_custom_git_cache_dir_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local run_log=""
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="1" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    GIT_CACHE_DIR="/workspace/custom-cache" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh"
+
+  run_log="${case_dir}/mock-state/docker-run.log"
+  [ -f "$run_log" ] || fail "missing docker run log for custom git cache dir case"
+
+  assert_file_contains "$run_log" "-v ${case_dir}/workspace/.git-cache:/workspace/custom-cache"
+  assert_file_contains "$run_log" "-e GIT_CACHE_DIR=/workspace/custom-cache"
+  assert_file_not_contains "$run_log" "-e GIT_CACHE_DIR=/workspace/.git-cache"
+
+  echo "PASS: controller honors custom worker GIT_CACHE_DIR"
+}
+
 run_per_agent_skill_routing_case() {
   local repo_root="$1"
   local case_dir="$2"
@@ -2676,6 +2712,7 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 echo "Running controller script checks"
 run_success_case "$repo_root" "${tmpdir}/success"
+run_custom_git_cache_dir_case "$repo_root" "${tmpdir}/custom-git-cache-dir"
 run_per_agent_skill_routing_case "$repo_root" "${tmpdir}/per-agent-skill-routing"
 run_invalid_skill_bind_mount_case \
   "$repo_root" \

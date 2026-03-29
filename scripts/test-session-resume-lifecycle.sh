@@ -329,7 +329,7 @@ run_run_once() {
   local repo_root="$1"
   shift
 
-  env -u HIVEMOOT_BUZZ_ROLE \
+  env -i \
     PATH="${case_dir}/mock-bin:${PATH}" \
     HOME="${case_dir}/home" \
     TARGET_REPO="owner/repo" \
@@ -354,7 +354,7 @@ run_run_once() {
 }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-tmpdir="$(mktemp -d)"
+tmpdir="$(mktemp -d "${repo_root}/.tmp-session-resume.XXXXXX")"
 trap 'rm -rf "$tmpdir"' EXIT
 
 echo "Running session resume lifecycle checks"
@@ -449,7 +449,7 @@ run_run_once_claude() {
   local repo_root="$1"
   shift
 
-  env -u HIVEMOOT_BUZZ_ROLE \
+  env -i \
     PATH="${case_dir}/mock-bin:${PATH}" \
     HOME="${case_dir}/home" \
     TARGET_REPO="owner/repo" \

@@ -2105,7 +2105,7 @@ shutdown_grace_secs="${CONTROLLER_SHUTDOWN_GRACE_SECS:-30}"
 global_slot_timeout_exit_code=124
 workspace_root="${CONTROLLER_WORKSPACE_ROOT:-${WORKSPACE_ROOT:-$(pwd)/data/controller}}"
 shared_git_cache_root="${workspace_root}/.git-cache"
-worker_git_cache_dir="/workspace/.git-cache"
+worker_git_cache_dir="${GIT_CACHE_DIR:-/workspace/.git-cache}"
 shutdown_flag_file="${workspace_root}/shutdown.requested"
 jobs_root="${workspace_root}/jobs"
 runs_root="${workspace_root}/runs"
@@ -2213,6 +2213,14 @@ case "$workspace_root" in
   /*) ;;
   *)
     echo "CONTROLLER_WORKSPACE_ROOT must be an absolute path: ${workspace_root}" >&2
+    exit 1
+    ;;
+esac
+
+case "$worker_git_cache_dir" in
+  /*) ;;
+  *)
+    echo "GIT_CACHE_DIR must be an absolute path" >&2
     exit 1
     ;;
 esac

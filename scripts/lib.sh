@@ -692,12 +692,14 @@ init_agent_home() {
 #
 # Args:
 #   target_repo   owner/repo form of the repository
-#   mirror_dir    path for the bare mirror (e.g. /workspace/.git-cache/owner/repo/mirror.git)
+#   mirror_dir    path for the bare mirror
+#                 (e.g. /workspace/.git-cache/owner/repo/<identity-hash>/mirror.git)
 #   lock_dir      directory for flock lock files (e.g. /workspace/.git-cache/locks)
 #   clone_dir     destination for the working clone
 #   clone_depth   shallow depth (0 = full clone)
 #   askpass       path to a GIT_ASKPASS script that emits credentials
 #   git_pat       GitHub token forwarded as GIT_PAT to the askpass script
+#   cache_scope   token-identity scope key used to isolate mirrors/locks
 #
 # Returns 0 on success; 1 if the caller should fall back to a direct clone.
 clone_with_reference_cache() {
@@ -708,11 +710,11 @@ clone_with_reference_cache() {
   local clone_depth="${5:-0}"
   local askpass="$6"
   local git_pat="$7"
+  local cache_scope="${8:-default}"
 
   local repo_url="https://github.com/${target_repo}.git"
-  # Lock file: replace / with - so it is a flat file under lock_dir.
   local lock_name
-  lock_name="$(printf '%s' "$target_repo" | tr '/' '-')"
+  lock_name="$(printf '%s\n%s\n' "$target_repo" "$cache_scope" | git hash-object --stdin)"
   local lock_file="${lock_dir}/${lock_name}.lock"
 
   mkdir -p "$lock_dir" "$(dirname "$mirror_dir")" || return 1

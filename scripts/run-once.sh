@@ -378,6 +378,7 @@ export GITHUB_TOKEN="$github_token"
 export GH_TOKEN="$github_token"
 
 github_login=""
+github_identity_scope=""
 if github_login_raw="$(gh api user --jq .login 2>/dev/null)"; then
   case "$github_login_raw" in
     ''|*[^a-zA-Z0-9-]*)
@@ -391,8 +392,16 @@ fi
 token_mode=""
 if [ -n "$github_login" ]; then
   token_mode="user"
-elif gh api installation --jq .id >/dev/null 2>&1; then
+  github_identity_scope="user:${github_login}"
+elif github_installation_id="$(gh api installation --jq .id 2>/dev/null)"; then
   token_mode="installation"
+  case "$github_installation_id" in
+    ''|*[!0-9]*)
+      echo "Failed to validate GitHub App installation token identity." >&2
+      exit 1
+      ;;
+  esac
+  github_identity_scope="installation:${github_installation_id}"
 else
   echo "Failed to validate GitHub token. Ensure token is a valid user PAT/token or GitHub App installation token." >&2
   exit 1
@@ -634,12 +643,14 @@ EOF
     local fresh_clone_ok=0
 
     if [ "${shared_clone_cache}" = "1" ]; then
-      local mirror_dir="${git_cache_dir}/${target_repo}/mirror.git"
+      local cache_scope_key=""
+      cache_scope_key="$(printf '%s' "$github_identity_scope" | git hash-object --stdin)"
+      local mirror_dir="${git_cache_dir}/${target_repo}/${cache_scope_key}/mirror.git"
       local lock_dir="${git_cache_dir}/locks"
       log "Cloning https://github.com/${target_repo}.git via shared cache (depth=${depth_label})"
       if clone_with_reference_cache \
           "$target_repo" "$mirror_dir" "$lock_dir" \
-          "$repo_dir" "$clone_depth" "$askpass" "$github_token"; then
+          "$repo_dir" "$clone_depth" "$askpass" "$github_token" "$cache_scope_key"; then
         fresh_clone_ok=1
       else
         log "Reference cache unavailable; falling back to direct clone"
