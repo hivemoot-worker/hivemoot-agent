@@ -359,6 +359,7 @@ spawn_worker() {
     --cpus "${AGENT_CPU_LIMIT:-2.0}"
     --pids-limit "${AGENT_PIDS_LIMIT:-512}"
     -v "${job_workspace}:/workspace"
+    -v "${shared_git_cache_root}:${worker_git_cache_dir}"
     -v "${job_home}:/home/node"
     -v "${token_file}:/run/secrets/agent_github_token:ro"
   )
@@ -395,6 +396,7 @@ spawn_worker() {
     -e "RUN_MODE=${worker_run_mode}"
     -e TARGET_REPO="${repo}"
     -e WORKSPACE_ROOT=/workspace
+    -e GIT_CACHE_DIR="${worker_git_cache_dir}"
     -e JOB_ID="${job_id}"
     -e AGENT_ID_01="${agent_id}"
     -e AGENT_GITHUB_TOKEN_01_FILE=/run/secrets/agent_github_token
@@ -2102,6 +2104,8 @@ heartbeat_interval_secs="${HEARTBEAT_INTERVAL_SECS:-1800}"
 shutdown_grace_secs="${CONTROLLER_SHUTDOWN_GRACE_SECS:-30}"
 global_slot_timeout_exit_code=124
 workspace_root="${CONTROLLER_WORKSPACE_ROOT:-${WORKSPACE_ROOT:-$(pwd)/data/controller}}"
+shared_git_cache_root="${workspace_root}/.git-cache"
+worker_git_cache_dir="/workspace/.git-cache"
 shutdown_flag_file="${workspace_root}/shutdown.requested"
 jobs_root="${workspace_root}/jobs"
 runs_root="${workspace_root}/runs"
@@ -2263,8 +2267,8 @@ if [ "$watch_mentions" = "1" ]; then
   fi
 fi
 
-mkdir -p "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root"
-chmod 700 "$workspace_root" "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" 2>/dev/null || true
+mkdir -p "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" "$shared_git_cache_root"
+chmod 700 "$workspace_root" "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" "$shared_git_cache_root" 2>/dev/null || true
 rm -f "$shutdown_flag_file"
 init_global_slots "$global_slots_dir" "$global_max_workers"
 declare -A seen_agents=()

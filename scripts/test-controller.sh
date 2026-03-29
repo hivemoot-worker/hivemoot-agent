@@ -548,9 +548,11 @@ run_success_case() {
   assert_file_contains "$run_log" "--security-opt=no-new-privileges"
   assert_file_contains "$run_log" "--read-only"
   assert_file_contains "$run_log" "--tmpfs /tmp:size=2g,mode=1777"
+  assert_file_contains "$run_log" "-v ${case_dir}/workspace/.git-cache:/workspace/.git-cache"
   assert_file_contains "$run_log" "-e RUN_MODE=once"
   assert_file_contains "$run_log" "-e RUN_TRIGGER_TYPE=scheduled"
   assert_file_contains "$run_log" "-e TARGET_REPO=owner/repo"
+  assert_file_contains "$run_log" "-e GIT_CACHE_DIR=/workspace/.git-cache"
   assert_file_contains "$run_log" "-e JOB_ID="
   assert_file_contains "$run_log" "-e HIVEMOOT_CLI_UPDATE=skip"
   assert_file_contains "$run_log" "-e GIT_CLONE_DEPTH=1"
@@ -559,6 +561,10 @@ run_success_case() {
   assert_file_contains "$settings_snapshot" 'gemini_settings={"selectedType":"oauth-personal"}'
   settings_count="$(grep -Fc 'gemini_settings={"selectedType":"oauth-personal"}' "$settings_snapshot" | tr -d '[:space:]')"
   assert_eq "2" "$settings_count" "expected Gemini settings.json in each job home before launch"
+
+  local cache_env_count=""
+  cache_env_count="$(grep -Fc -- '-e GIT_CACHE_DIR=/workspace/.git-cache' "$run_log")"
+  assert_eq "2" "$cache_env_count" "expected shared cache dir to be identical across workers"
 
   shopt -s nullglob
   status_files=("${case_dir}/workspace"/workspaces/*/.hivemoot/status)
