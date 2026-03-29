@@ -1790,6 +1790,125 @@ run_shutdown_signal_case() {
   echo "PASS: shutdown blocks queued launches after signal (controller_exit=${controller_status})"
 }
 
+run_shutdown_cancelled_job_preserves_backoff_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_pid=0
+  local controller_status=0
+  local controller_log="${case_dir}/controller.log"
+  local run_log=""
+  local deadline=0
+  local future_epoch=""
+  local backoff_file="${case_dir}/workspace/agent-backoff/worker"
+  local repo_key=""
+  local repo_lock_file=""
+  local repo_lock_pid=0
+  local lock_ready_file="${case_dir}/repo-lock.ready"
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  run_log="${case_dir}/mock-state/docker-run.log"
+  mkdir -p "${case_dir}/locks"
+
+  repo_key="$(printf '%s' 'owner/repo__worker' | tr -c 'A-Za-z0-9' '_')"
+  repo_lock_file="${case_dir}/locks/agent-${repo_key}.lock"
+  : > "$repo_lock_file"
+  (
+    exec 9>>"$repo_lock_file"
+    flock -n 9 || exit 1
+    : > "$lock_ready_file"
+    sleep 300
+  ) &
+  repo_lock_pid=$!
+
+  deadline=$((SECONDS + 5))
+  while [ ! -f "$lock_ready_file" ]; do
+    if ! kill -0 "$repo_lock_pid" 2>/dev/null; then
+      fail "failed to hold repo lock for shutdown backoff-preservation test"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      fail "timed out waiting for repo lock holder to become ready"
+    fi
+    sleep 0.1
+  done
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1 &
+  controller_pid=$!
+
+  deadline=$((SECONDS + 15))
+  while true; do
+    if grep -Fq "Queued job:" "$controller_log" 2>/dev/null; then
+      break
+    fi
+    if ! kill -0 "$controller_pid" 2>/dev/null; then
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "controller exited before queued shutdown-cancel case was ready"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "timed out waiting for queued shutdown-cancel case"
+    fi
+    sleep 0.1
+  done
+
+  future_epoch=$(( $(date +%s) + 86400 ))
+  mkdir -p "$(dirname "$backoff_file")"
+  printf 'backoff_until=%s\nconsecutive=2\n' "$future_epoch" > "$backoff_file"
+
+  kill -TERM "$controller_pid"
+
+  deadline=$((SECONDS + 5))
+  while true; do
+    if grep -Fq "Shutdown signal received; stopping new launches" "$controller_log" 2>/dev/null; then
+      break
+    fi
+    if ! kill -0 "$controller_pid" 2>/dev/null; then
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "controller exited before shutdown was observed in backoff-preservation test"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "timed out waiting for shutdown signal handling in backoff-preservation test"
+    fi
+    sleep 0.1
+  done
+
+  kill "$repo_lock_pid" 2>/dev/null || true
+  wait "$repo_lock_pid" 2>/dev/null || true
+
+  if wait "$controller_pid"; then
+    controller_status=0
+  else
+    controller_status=$?
+  fi
+
+  if [ -f "$run_log" ] && [ -s "$run_log" ]; then
+    fail "expected no docker run in shutdown backoff-preservation test, but worker launch occurred"
+  fi
+
+  assert_exists "$backoff_file"
+  assert_file_contains "$backoff_file" "consecutive=2"
+  assert_file_contains "$controller_log" "Skipping queued job due to shutdown:"
+  assert_file_contains "$controller_log" "agent=worker"
+
+  echo "PASS: shutdown-cancelled queued job preserves agent backoff (controller_exit=${controller_status})"
+}
+
 run_exit_trap_reaps_job_subshells_case() {
   local repo_root="$1"
   local case_dir="$2"
@@ -2872,6 +2991,7 @@ run_workspace_prune_case "$repo_root" "${tmpdir}/workspace-prune"
 run_workspace_ttl_disabled_case "$repo_root" "${tmpdir}/workspace-ttl-disabled"
 run_workspace_prune_failure_reporting_case "$repo_root" "${tmpdir}/workspace-prune-failure-reporting"
 run_shutdown_signal_case "$repo_root" "${tmpdir}/shutdown"
+run_shutdown_cancelled_job_preserves_backoff_case "$repo_root" "${tmpdir}/shutdown-backoff-preservation"
 run_exit_trap_reaps_job_subshells_case "$repo_root" "${tmpdir}/exit-trap-reap"
 run_global_slots_cross_controller_case "$repo_root" "${tmpdir}/global-slots-cross-controller"
 run_global_slot_mention_timeout_requeue_case "$repo_root" "${tmpdir}/global-slot-mention-timeout"

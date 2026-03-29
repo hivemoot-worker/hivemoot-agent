@@ -1572,6 +1572,16 @@ record_job_completion() {
     return 0
   fi
 
+  # Queued jobs skipped during shutdown never reached a worker, so keep them
+  # out of the generic success/failure accounting and backoff mutations.
+  if [ "$exit_code" -eq "$job_cancelled_exit_code" ]; then
+    if [ -n "$processing_file" ] && [ -f "$processing_file" ]; then
+      final_file="${processing_file%.processing}.done"
+      mv -f "$processing_file" "$final_file" 2>/dev/null || true
+    fi
+    return 0
+  fi
+
   if [ "$exit_code" -eq 0 ]; then
     if [ "$trigger_type" = "mention" ] && [ -n "$ack_key" ] && [ -n "$state_file" ]; then
       if ack_mention "$agent_id" "$ack_key" "$state_file"; then
@@ -1742,7 +1752,7 @@ run_job() {
     log "Skipping queued job due to shutdown: id=${job_id} repo=${repo} agent=${agent_id}"
     write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "cancelled" "-"
     release_global_slot
-    return 0
+    return "$job_cancelled_exit_code"
   fi
 
   write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "running" "-"
@@ -2323,6 +2333,7 @@ queue_maintenance_interval_secs="${QUEUE_MAINTENANCE_INTERVAL_SECS:-60}"
 heartbeat_interval_secs="${HEARTBEAT_INTERVAL_SECS:-1800}"
 shutdown_grace_secs="${CONTROLLER_SHUTDOWN_GRACE_SECS:-30}"
 global_slot_timeout_exit_code=124
+job_cancelled_exit_code=75
 quota_backoff_floor_secs="${QUOTA_BACKOFF_FLOOR_SECS:-7200}"
 quota_backoff_max_secs="${QUOTA_BACKOFF_MAX_SECS:-86400}"
 quota_backoff_jitter_pct="${QUOTA_BACKOFF_JITTER_PCT:-15}"
