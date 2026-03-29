@@ -6,7 +6,7 @@
 
 ## Context
 
-`scripts/controller.sh` is a Bash 4+ script (~1,350 lines) that spawns isolated Docker
+`scripts/controller.sh` is a Bash 4+ script (2,342 lines as of 2026-03) that spawns isolated Docker
 worker containers per job. It implements:
 
 - Filesystem-backed job queue (trigger -> processing -> done/failed)
