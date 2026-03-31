@@ -77,9 +77,10 @@ request_task_claim() {
   fi
 
   response_file="$(mktemp)"
-  status="$(curl -sS -o "$response_file" -w '%{http_code}' \
+  status="$(printf 'Authorization: Bearer %s\n' "$executor_token" | \
+    curl -sS -o "$response_file" -w '%{http_code}' \
     -X POST \
-    -H "Authorization: Bearer ${executor_token}" \
+    -H @- \
     -H 'Content-Type: application/json' \
     "$claim_url")"
 
@@ -215,14 +216,19 @@ post_task_update() {
     -o "$response_file"
     -w '%{http_code}'
     -X POST
-    -H "Authorization: Bearer ${executor_token}"
     -H 'Content-Type: application/json'
+    -d "$payload"
+    "$update_url"
   )
   if [ -n "$task_claim_token" ]; then
-    curl_args+=( -H "X-Task-Claim-Token: ${task_claim_token}" )
+    status="$({
+      printf 'Authorization: Bearer %s\n' "$executor_token"
+      printf 'X-Task-Claim-Token: %s\n' "$task_claim_token"
+    } | curl "${curl_args[@]}" -H @-)"
+  else
+    status="$(printf 'Authorization: Bearer %s\n' "$executor_token" | \
+      curl "${curl_args[@]}" -H @-)"
   fi
-  curl_args+=( -d "$payload" "$update_url" )
-  status="$(curl "${curl_args[@]}")"
 
   if [ "$status" != "200" ]; then
     log "Task update failed: action=${action} status=${status}"

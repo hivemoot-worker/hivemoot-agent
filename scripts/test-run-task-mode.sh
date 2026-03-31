@@ -108,6 +108,7 @@ write_format=""
 data_payload=""
 url=""
 headers=""
+read_headers_from_stdin=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -123,8 +124,13 @@ while [ "$#" -gt 0 ]; do
       data_payload="$2"
       shift 2
       ;;
-    -X|-H)
-      if [ "$1" = "-H" ]; then
+    -X)
+      shift 2
+      ;;
+    -H)
+      if [ "$2" = "@-" ]; then
+        read_headers_from_stdin=1
+      else
         if [ -n "$headers" ]; then
           headers="${headers}|$2"
         else
@@ -142,6 +148,18 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if [ "$read_headers_from_stdin" -eq 1 ]; then
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    [ -z "$line" ] && continue
+    if [ -n "$headers" ]; then
+      headers="${headers}|${line}"
+    else
+      headers="${line}"
+    fi
+  done
+fi
 
 printf 'URL=%s DATA=%s HEADERS=%s\n' "$url" "$data_payload" "$headers" >> "${MOCK_CURL_CALLS:?}"
 

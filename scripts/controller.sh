@@ -308,8 +308,9 @@ report_task_failure_from_controller() {
   payload="$(jq -cn --arg action "fail" --arg error "$error_msg" \
     '{action: $action, error: $error}')"
 
-  curl -sf -X POST "$url" \
-    -H "Authorization: Bearer ${task_executor_token}" \
+  printf 'Authorization: Bearer %s\n' "$task_executor_token" | \
+    curl -sf -X POST "$url" \
+    -H @- \
     -H "Content-Type: application/json" \
     -d "$payload" \
     --max-time 10 \
@@ -1775,9 +1776,10 @@ claim_next_task() {
   claimed_task_messages_json=""
 
   response_file="$(mktemp)"
-  status="$(curl -sS -o "$response_file" -w '%{http_code}' \
+  status="$(printf 'Authorization: Bearer %s\n' "$task_executor_token" | \
+    curl -sS -o "$response_file" -w '%{http_code}' \
     -X POST \
-    -H "Authorization: Bearer ${task_executor_token}" \
+    -H @- \
     -H 'Content-Type: application/json' \
     "$task_claim_url")"
 
