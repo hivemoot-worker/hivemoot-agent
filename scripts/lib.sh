@@ -422,6 +422,18 @@ validate_task_id() {
   fi
 }
 
+validate_url_scheme() {
+  local url="$1"
+
+  case "$url" in
+    https://*|http://*) return 0 ;;
+    *)
+      echo "Refusing to send credentials to URL with invalid scheme: ${url}" >&2
+      return 1
+      ;;
+  esac
+}
+
 require_non_negative_integer() {
   local name="$1"
   local value="$2"

@@ -105,3 +105,44 @@ assert_fails_with \
   env TARGET_REPO=owner/repo 'JOB_ID=job;id' bash scripts/run-once.sh
 
 echo "PASS: JOB_ID validation checks"
+
+echo "Running URL scheme validation checks"
+
+# Source lib.sh to test validate_url_scheme directly.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=scripts/lib.sh
+. "${SCRIPT_DIR}/lib.sh"
+
+if ! validate_url_scheme "https://example.com/api"; then
+  fail "validate_url_scheme should accept https:// URLs"
+fi
+
+if ! validate_url_scheme "http://localhost:3000"; then
+  fail "validate_url_scheme should accept http:// URLs"
+fi
+
+assert_fails_with \
+  "Refusing to send credentials to URL with invalid scheme: file:///etc/passwd" \
+  validate_url_scheme "file:///etc/passwd"
+
+assert_fails_with \
+  "Refusing to send credentials to URL with invalid scheme: ftp://evil.com" \
+  validate_url_scheme "ftp://evil.com"
+
+assert_fails_with \
+  "Refusing to send credentials to URL with invalid scheme: gopher://evil.com" \
+  validate_url_scheme "gopher://evil.com"
+
+assert_fails_with \
+  "Refusing to send credentials to URL with invalid scheme: javascript:alert(1)" \
+  validate_url_scheme "javascript:alert(1)"
+
+assert_fails_with \
+  "Refusing to send credentials to URL with invalid scheme: " \
+  validate_url_scheme ""
+
+assert_fails_with \
+  "Refusing to send credentials to URL with invalid scheme: no-scheme.com/path" \
+  validate_url_scheme "no-scheme.com/path"
+
+echo "PASS: URL scheme validation checks"

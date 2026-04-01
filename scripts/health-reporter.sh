@@ -197,6 +197,10 @@ _send_health_report() {
   local attempt=0
   local backoff=1
 
+  if ! validate_url_scheme "$url"; then
+    return 1
+  fi
+
   while [ "$attempt" -le "$max_retries" ]; do
     local http_code=""
     local curl_exit=0

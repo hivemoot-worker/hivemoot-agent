@@ -76,6 +76,10 @@ request_task_claim() {
     return 1
   fi
 
+  if ! validate_url_scheme "$claim_url"; then
+    return 1
+  fi
+
   response_file="$(mktemp)"
   status="$(curl -sS -o "$response_file" -w '%{http_code}' \
     -X POST \
@@ -185,6 +189,10 @@ post_task_update() {
   if ! update_url="$(build_execute_url)"; then
     log "Task update skipped: execute URL is not configured"
     return 0
+  fi
+
+  if ! validate_url_scheme "$update_url"; then
+    return 1
   fi
 
   case "$action" in

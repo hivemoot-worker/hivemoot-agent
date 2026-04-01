@@ -305,6 +305,11 @@ report_task_failure_from_controller() {
   fi
 
   url="${task_execute_base_url%/}/${task_id}/execute"
+
+  if ! validate_url_scheme "$url"; then
+    return 0
+  fi
+
   payload="$(jq -cn --arg action "fail" --arg error "$error_msg" \
     '{action: $action, error: $error}')"
 
@@ -1773,6 +1778,10 @@ claim_next_task() {
   claimed_task_repo=""
   claimed_task_claim_token=""
   claimed_task_messages_json=""
+
+  if ! validate_url_scheme "$task_claim_url"; then
+    return 2
+  fi
 
   response_file="$(mktemp)"
   status="$(curl -sS -o "$response_file" -w '%{http_code}' \
