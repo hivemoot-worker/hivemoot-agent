@@ -22,6 +22,11 @@ x-agent-base-common: &agent-base-common
 
 x-agent-base: &agent-base
   <<: *agent-base-common
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
   tmpfs:
     - /tmp:size=2g,mode=1777
     - /home/node/.codex:uid=1000,gid=1000,mode=0700
@@ -71,6 +76,10 @@ x-agent-env: &agent-env
   OPENCODE_PROVIDER: ${OPENCODE_PROVIDER:-}
   OPENCODE_MODEL: ${OPENCODE_MODEL:-}
   MAX_CONSECUTIVE_FAILURES: ${MAX_CONSECUTIVE_FAILURES:-5}
+  HIVEMOOT_CLI_UPDATE: ${HIVEMOOT_CLI_UPDATE:-skip}
+  # Redirect git global config writes (for example from gh auth setup-git) to tmpfs.
+  # Without this, git config --global fails with EROFS when read_only: true.
+  GIT_CONFIG_GLOBAL: ${GIT_CONFIG_GLOBAL:-/tmp/.gitconfig}
   HEALTH_REPORT_URL: ${HEALTH_REPORT_URL:-}
   HIVEMOOT_AGENT_TOKEN: ${HIVEMOOT_AGENT_TOKEN:-}
   HIVEMOOT_AGENT_TOKEN_FILE: ${HIVEMOOT_AGENT_TOKEN_FILE:-}

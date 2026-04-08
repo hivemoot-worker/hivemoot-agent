@@ -29,10 +29,14 @@ tmp_home="$(mktemp -d)"
 tmp_stderr="$(mktemp)"
 tmp_shared_home="$(mktemp -d)"
 tmp_agent_home="$(mktemp -d)"
+tmp_symlink_home=""
+tmp_symlink_target=""
 cleanup() {
   rm -rf "$tmp_home"
   rm -rf "$tmp_shared_home"
   rm -rf "$tmp_agent_home"
+  rm -rf "$tmp_symlink_home"
+  rm -f "$tmp_symlink_target"
   rm -f "$tmp_stderr"
 }
 trap cleanup EXIT
@@ -83,5 +87,28 @@ assert_file_content_exact \
 assert_file_content_exact \
   "$tmp_agent_home/.claude.json" \
   '{"hasCompletedOnboarding":true}'
+
+# Symlink scenario: simulate read-only rootfs by pre-creating .claude.json
+# as a symlink (as the Dockerfile does for the container). Entrypoint must
+# write through the symlink to the target, not fail with EROFS.
+tmp_symlink_home="$(mktemp -d)"
+tmp_symlink_target="$(mktemp)"
+ln -sf "$tmp_symlink_target" "$tmp_symlink_home/.claude.json"
+if env \
+  HOME="$tmp_symlink_home" \
+  CLAUDE_CODE_OAUTH_TOKEN="token-symlink-test" \
+  AGENT_WORKLOAD="nonexistent" \
+  bash scripts/entrypoint.sh > /dev/null 2>&1
+then
+  true
+fi
+[ -f "$tmp_symlink_home/.claude.json" ] || fail "symlink: missing onboarding file"
+assert_file_content_exact \
+  "$tmp_symlink_home/.claude.json" \
+  '{"hasCompletedOnboarding":true}'
+rm -rf "$tmp_symlink_home"
+rm -f "$tmp_symlink_target"
+tmp_symlink_home=""
+tmp_symlink_target=""
 
 echo "PASS: Claude token bootstrap checks"
