@@ -65,7 +65,7 @@ prune_queue_artifacts() {
   now="$(date +%s)"
 
   shopt -s nullglob
-  artifact_files=("${queue_root}"/*.done "${queue_root}"/*.failed)
+  artifact_files=("${queue_root}"/*.done "${queue_root}"/*.failed "${queue_root}"/*.cancelled)
   shopt -u nullglob
 
   for artifact_file in "${artifact_files[@]}"; do

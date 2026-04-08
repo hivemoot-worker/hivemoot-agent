@@ -382,6 +382,23 @@ If the worker exits non-zero, the controller immediately POSTs `action=fail`
 to the execute endpoint as a safety net for cases where the worker itself
 crashed before self-reporting (OOM, container crash).
 
+### Quota And Auth Backoff
+
+When a periodic worker fails with a quota-exhausted or auth-rejected error, the
+controller defers later periodic triggers for that agent until the backoff
+window expires. This prevents controller mode from retrying straight back into
+the same provider quota or credential failure.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `QUOTA_BACKOFF_FLOOR_SECS` | `7200` | Minimum backoff on quota/auth failure in seconds. Set to `0` to disable. The default 2-hour floor guarantees at least one skipped cycle at the standard `PERIODIC_INTERVAL_SECS=3600`. |
+| `QUOTA_BACKOFF_MAX_SECS` | `86400` | Maximum backoff cap for repeated failures in seconds. The default 24-hour cap covers day-scale billing and quota resets. |
+| `QUOTA_BACKOFF_JITTER_PCT` | `15` | Percentage jitter applied to the computed backoff delay to avoid synchronized retries when multiple agents share the same provider quota. Set to `0` to disable jitter. |
+
+Backoff escalates exponentially (`floor × 2^(consecutive - 1)`, capped at
+`max`, with `±jitter`). This backoff applies only to periodic controller
+cycles; mention, review-request, and task triggers are never deferred by it.
+
 Important: this script is designed to run on the host with direct `docker` access. Do not run it from inside another container with a mounted `docker.sock`.
 
 ## Credential Storage (Default)

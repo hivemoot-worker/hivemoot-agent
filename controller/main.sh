@@ -118,10 +118,14 @@ queue_maintenance_interval_secs="${QUEUE_MAINTENANCE_INTERVAL_SECS:-60}"
 heartbeat_interval_secs="${HEARTBEAT_INTERVAL_SECS:-1800}"
 shutdown_grace_secs="${CONTROLLER_SHUTDOWN_GRACE_SECS:-30}"
 global_slot_timeout_exit_code=124
+quota_backoff_floor_secs="${QUOTA_BACKOFF_FLOOR_SECS:-7200}"
+quota_backoff_max_secs="${QUOTA_BACKOFF_MAX_SECS:-86400}"
+quota_backoff_jitter_pct="${QUOTA_BACKOFF_JITTER_PCT:-15}"
 workspace_root="${CONTROLLER_WORKSPACE_ROOT:-${WORKSPACE_ROOT:-$(pwd)/data/controller}}"
 shutdown_flag_file="${workspace_root}/shutdown.requested"
 jobs_root="${workspace_root}/jobs"
 runs_root="${workspace_root}/runs"
+agent_backoff_root="${workspace_root}/agent-backoff"
 workspaces_root="${workspace_root}/workspaces"
 homes_root="${workspace_root}/homes"
 queue_root="${workspace_root}/queue"
@@ -225,6 +229,13 @@ require_non_negative_integer QUEUE_MAINTENANCE_INTERVAL_SECS "$queue_maintenance
 require_non_negative_integer HEARTBEAT_INTERVAL_SECS "$heartbeat_interval_secs"
 require_non_negative_integer AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS "$task_heartbeat_interval_seconds"
 require_non_negative_integer WATCH_TRIGGER_FAILURE_BACKOFF_SECS "$watch_trigger_failure_backoff_secs"
+require_non_negative_integer QUOTA_BACKOFF_FLOOR_SECS "$quota_backoff_floor_secs"
+require_non_negative_integer QUOTA_BACKOFF_MAX_SECS "$quota_backoff_max_secs"
+require_non_negative_integer QUOTA_BACKOFF_JITTER_PCT "$quota_backoff_jitter_pct"
+if [ "$quota_backoff_jitter_pct" -gt 100 ]; then
+  echo "QUOTA_BACKOFF_JITTER_PCT must be between 0 and 100" >&2
+  exit 1
+fi
 if [ "$watch_mentions" = "1" ] || [ "$watch_review_requests" = "1" ]; then
   require_positive_integer WATCH_POLL_INTERVAL "$watch_poll_interval"
 fi
@@ -310,8 +321,8 @@ if [ "$watch_messaging" = "1" ]; then
   fi
 fi
 
-mkdir -p "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" "$messaging_homes_root" "$messaging_sessions_root"
-chmod 700 "$workspace_root" "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" "$messaging_homes_root" "$messaging_sessions_root" 2>/dev/null || true
+mkdir -p "$jobs_root" "$runs_root" "$agent_backoff_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" "$messaging_homes_root" "$messaging_sessions_root"
+chmod 700 "$workspace_root" "$jobs_root" "$runs_root" "$agent_backoff_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" "$messaging_homes_root" "$messaging_sessions_root" 2>/dev/null || true
 rm -f "$shutdown_flag_file"
 init_global_slots "$global_slots_dir" "$global_max_workers"
 declare -A seen_agents=()

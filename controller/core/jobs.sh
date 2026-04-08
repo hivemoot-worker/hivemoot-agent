@@ -266,6 +266,13 @@ record_job_completion() {
   local state_file="${pid_to_state_file[$pid]:-}"
   local processing_file="${pid_to_processing_file[$pid]:-}"
   local global_slot_timeout_file="${jobs_root}/${job_id}/global-slot-timeout"
+  local shutdown_cancelled_file="${runs_root}/${job_id}/shutdown-cancelled"
+  local container_log_file="${runs_root}/${job_id}/container.log"
+  local failure_class=""
+  local prev_consecutive=0
+  local new_consecutive=0
+  local backoff_delay=0
+  local backoff_until=0
   local global_slot_timeout_secs=""
   local hook_status=0
 
@@ -286,10 +293,20 @@ record_job_completion() {
     return 0
   fi
 
+  if [ -f "$shutdown_cancelled_file" ]; then
+    rm -f "$shutdown_cancelled_file" 2>/dev/null || true
+    log "Job cancelled due to shutdown: id=${job_id} repo=${repo} agent=${agent_id}"
+    finalize_processing_file "$processing_file" "cancelled"
+    return 0
+  fi
+
   if [ "$exit_code" -eq 0 ]; then
     hook_status=0
     controller_invoke_trigger_hook on_success "$trigger_type" "$processing_file" "$job_id" "$repo" "$agent_id" "$ack_key" "$state_file" || hook_status=$?
     if [ "$hook_status" -eq 0 ]; then
+      if [ "$trigger_type" = "periodic" ] && [ -n "$agent_id" ] && [ "$agent_id" != "unknown" ]; then
+        clear_agent_backoff "$agent_id"
+      fi
       completed_jobs=$((completed_jobs + 1))
       log "Job completed: id=${job_id} repo=${repo} agent=${agent_id}"
     else
@@ -310,6 +327,20 @@ record_job_completion() {
     fi
   fi
   failed_jobs=$((failed_jobs + 1))
+  if [ "$trigger_type" = "periodic" ] && [ -n "$agent_id" ] && [ "$agent_id" != "unknown" ] \
+    && [ "$quota_backoff_floor_secs" -gt 0 ]; then
+    failure_class="$(classify_periodic_failure "$container_log_file")"
+    case "$failure_class" in
+      quota|auth)
+        prev_consecutive="$(read_agent_backoff_consecutive "$agent_id")"
+        new_consecutive=$((prev_consecutive + 1))
+        backoff_delay="$(calculate_quota_backoff_delay "$new_consecutive")"
+        backoff_until=$(( $(date +%s) + backoff_delay ))
+        write_agent_backoff "$agent_id" "$backoff_until" "$new_consecutive"
+        log "Job backoff: agent=${agent_id} class=${failure_class} consecutive=${new_consecutive} delay=${backoff_delay}s"
+        ;;
+    esac
+  fi
   log "Job failed: id=${job_id} repo=${repo} agent=${agent_id} exit=${exit_code}"
 }
 
@@ -449,10 +480,16 @@ run_job() {
 
   if [ "$shutdown_requested" -ne 0 ] || [ -f "$shutdown_flag_file" ]; then
     log "Skipping queued job due to shutdown: id=${job_id} repo=${repo} agent=${agent_id}"
+    if [ "$trigger_type" = "periodic" ]; then
+      mark_shutdown_cancelled "$job_run_dir"
+    fi
     write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "cancelled" "-"
     close_slot_fd "$repo_lock_fd"
     repo_lock_fd=""
     release_global_slot
+    if [ "$trigger_type" = "periodic" ]; then
+      return 1
+    fi
     return 0
   fi
 
@@ -568,6 +605,18 @@ launch_job() {
         return 0
       fi
     done
+  fi
+
+  if [ "$trigger_type" = "periodic" ] && [ "$quota_backoff_floor_secs" -gt 0 ]; then
+    local backoff_until=0
+    local now_epoch=0
+    backoff_until="$(read_agent_backoff_until "$agent_id")"
+    now_epoch="$(date +%s)"
+    if [ "$backoff_until" -gt "$now_epoch" ] 2>/dev/null; then
+      log "Periodic trigger deferred: agent=${agent_id} backoff active for $((backoff_until - now_epoch))s more"
+      finalize_processing_file "$processing_file" "done"
+      return 0
+    fi
   fi
 
   if ! wait_for_available_slot; then

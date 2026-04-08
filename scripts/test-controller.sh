@@ -3031,6 +3031,214 @@ run_task_failure_report_classified_error_case() {
   echo "PASS: controller classifies worker log and includes structured error in task fail payload"
 }
 
+run_quota_backoff_write_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_log="${case_dir}/controller.log"
+  local backoff_file="${case_dir}/workspace/agent-backoff/worker"
+  local backoff_until=""
+  local consecutive=""
+  local now_epoch=0
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_EXIT="1" \
+    MOCK_DOCKER_LOG_CONTENT="429 Too Many Requests: quota exceeded" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="1" \
+    PERIODIC_JITTER_SECS="0" \
+    QUOTA_BACKOFF_FLOOR_SECS="300" \
+    QUOTA_BACKOFF_MAX_SECS="3600" \
+    QUOTA_BACKOFF_JITTER_PCT="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1 || true
+
+  assert_exists "$backoff_file"
+  assert_file_contains "$controller_log" "Job backoff: agent=worker class=quota"
+  backoff_until="$(awk -F= '/^backoff_until=/{print $2; exit}' "$backoff_file")"
+  consecutive="$(awk -F= '/^consecutive=/{print $2; exit}' "$backoff_file")"
+  now_epoch="$(date +%s)"
+  [ -n "$backoff_until" ] || fail "expected backoff_until in quota backoff file"
+  [ "$backoff_until" -gt "$now_epoch" ] || fail "expected quota backoff_until to be in the future"
+  assert_eq "1" "$consecutive" "first quota failure should write consecutive=1"
+
+  echo "PASS: quota failure writes periodic backoff state"
+}
+
+run_auth_backoff_write_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_log="${case_dir}/controller.log"
+  local backoff_file="${case_dir}/workspace/agent-backoff/worker"
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_EXIT="1" \
+    MOCK_DOCKER_LOG_CONTENT="Missing GitHub token. Set AGENT_GITHUB_TOKEN_FILE or AGENT_GITHUB_TOKEN (or GITHUB_TOKEN/GH_TOKEN)." \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="1" \
+    PERIODIC_JITTER_SECS="0" \
+    QUOTA_BACKOFF_FLOOR_SECS="300" \
+    QUOTA_BACKOFF_MAX_SECS="3600" \
+    QUOTA_BACKOFF_JITTER_PCT="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1 || true
+
+  assert_exists "$backoff_file"
+  assert_file_contains "$controller_log" "class=auth"
+  echo "PASS: auth failure writes periodic backoff state"
+}
+
+run_quota_backoff_deferral_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_log="${case_dir}/controller.log"
+  local run_log="${case_dir}/mock-state/docker-run.log"
+  local future_epoch=0
+
+  mkdir -p "${case_dir}/workspace/agent-backoff"
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  future_epoch=$(( $(date +%s) + 86400 ))
+  printf 'backoff_until=%s\nconsecutive=2\n' "$future_epoch" > "${case_dir}/workspace/agent-backoff/worker"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="3600" \
+    PERIODIC_JITTER_SECS="0" \
+    QUOTA_BACKOFF_FLOOR_SECS="300" \
+    QUOTA_BACKOFF_MAX_SECS="3600" \
+    QUOTA_BACKOFF_JITTER_PCT="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1
+
+  if [ -f "$run_log" ] && [ -s "$run_log" ]; then
+    fail "expected no worker launch while periodic backoff is active"
+  fi
+
+  assert_file_contains "$controller_log" "Periodic trigger deferred: agent=worker backoff active"
+  echo "PASS: periodic trigger is deferred while backoff is active"
+}
+
+run_quota_backoff_shutdown_cancelled_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local lock_dir="${case_dir}/locks"
+  local workspace="${case_dir}/workspace"
+  local controller_log="${case_dir}/controller.log"
+  local run_log="${case_dir}/mock-state/docker-run.log"
+  local builder_lock_file="${lock_dir}/agent-owner_repo__builder.lock"
+  local backoff_file="${workspace}/agent-backoff/builder"
+  local shutdown_flag="${workspace}/shutdown.requested"
+  local controller_pid=0
+  local flock_holder_pid=0
+  local deadline=0
+  local future_epoch=0
+
+  mkdir -p "${workspace}/agent-backoff" "$lock_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  future_epoch=$(( $(date +%s) + 86400 ))
+  printf 'backoff_until=%s\nconsecutive=1\n' "$future_epoch" > "$backoff_file"
+
+  : > "$builder_lock_file"
+  (
+    flock -x 200
+    sleep 9999
+  ) 200>"$builder_lock_file" &
+  flock_holder_pid=$!
+  sleep 0.2
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="0" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="2" \
+    CONTROLLER_WORKSPACE_ROOT="$workspace" \
+    CONTROLLER_LOCK_DIR="$lock_dir" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_ID_02="builder" \
+    AGENT_GITHUB_TOKEN_02="token-2" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="3600" \
+    PERIODIC_JITTER_SECS="0" \
+    QUOTA_BACKOFF_FLOOR_SECS="0" \
+    QUOTA_BACKOFF_JITTER_PCT="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1 &
+  controller_pid=$!
+
+  deadline=$((SECONDS + 15))
+  while true; do
+    if [ -f "$run_log" ] && [ "$(wc -l < "$run_log" | tr -d '[:space:]')" -ge 1 ]; then
+      break
+    fi
+    if ! kill -0 "$controller_pid" 2>/dev/null; then
+      sed 's/^/  /' "$controller_log" >&2 || true
+      kill "$flock_holder_pid" 2>/dev/null || true
+      fail "controller exited before first worker launch in shutdown-cancelled test"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      sed 's/^/  /' "$controller_log" >&2 || true
+      kill "$flock_holder_pid" 2>/dev/null || true
+      fail "timed out waiting for first worker launch in shutdown-cancelled test"
+    fi
+    sleep 0.1
+  done
+
+  : > "$shutdown_flag"
+  kill "$flock_holder_pid" 2>/dev/null || true
+  wait "$flock_holder_pid" 2>/dev/null || true
+  wait "$controller_pid" 2>/dev/null || true
+
+  assert_file_contains "$controller_log" "Job cancelled due to shutdown"
+  assert_exists "$backoff_file"
+
+  echo "PASS: shutdown-cancelled periodic job keeps backoff state intact"
+}
+
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmpdir="$(mktemp -d "${repo_root}/.tmp-controller-test.XXXXXX")"
@@ -3088,6 +3296,7 @@ run_same_agent_concurrent_case "$repo_root" "${tmpdir}/same-agent-concurrent"
 run_periodic_deferral_cleanup_case "$repo_root" "${tmpdir}/periodic-deferral-cleanup"
 run_task_failure_report_case "$repo_root" "${tmpdir}/task-failure-report"
 run_task_failure_report_classified_error_case "$repo_root" "${tmpdir}/task-failure-classified"
+
 # ── Messaging trigger tests ────────────────────────────────────────────────
 
 run_messaging_trigger_prepare_job_case() {
@@ -3315,6 +3524,10 @@ run_messaging_duplicate_agent_ack_case() {
   echo "PASS: on_duplicate_agent sends exactly one ack across repeated queue passes"
 }
 
+run_quota_backoff_write_case "$repo_root" "${tmpdir}/quota-backoff-write"
+run_auth_backoff_write_case "$repo_root" "${tmpdir}/auth-backoff-write"
+run_quota_backoff_deferral_case "$repo_root" "${tmpdir}/quota-backoff-deferral"
+run_quota_backoff_shutdown_cancelled_case "$repo_root" "${tmpdir}/quota-backoff-shutdown-cancelled"
 run_task_oom_failure_case "$repo_root" "${tmpdir}/task-oom-failure"
 run_messaging_trigger_prepare_job_case "$repo_root" "${tmpdir}/messaging-prepare-job"
 run_messaging_validation_rejection_case "$repo_root" "${tmpdir}/messaging-validation"

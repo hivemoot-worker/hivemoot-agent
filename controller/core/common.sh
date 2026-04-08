@@ -109,9 +109,162 @@ EOF_TIMEOUT
   chmod 600 "$marker_file" 2>/dev/null || true
 }
 
+mark_shutdown_cancelled() {
+  local job_run_dir="$1"
+  local marker_file="${job_run_dir}/shutdown-cancelled"
+
+  mkdir -p "$job_run_dir"
+  : > "$marker_file"
+  chmod 600 "$marker_file" 2>/dev/null || true
+}
+
 read_global_slot_timeout_secs() {
   local marker_file="$1"
   awk -F= '/^timeout_secs=/{print $2; exit}' "$marker_file" 2>/dev/null || true
+}
+
+agent_backoff_file() {
+  local agent_id="$1"
+  printf '%s/%s\n' "$agent_backoff_root" "$agent_id"
+}
+
+classify_periodic_failure() {
+  local log_file="$1"
+  local classified=""
+
+  [ -s "$log_file" ] || {
+    printf 'normal\n'
+    return 0
+  }
+
+  if grep -qiF \
+    -e 'TerminalQuotaError' \
+    -e 'quota exhausted' \
+    -e 'billing_hard_limit_reached' \
+    -e 'You have exhausted your capacity' \
+    -e '429 Too Many Requests' \
+    -e 'rate_limit_exceeded' \
+    "$log_file" 2>/dev/null; then
+    printf 'quota\n'
+    return 0
+  fi
+
+  classified="$(classify_worker_log_failure "$log_file" 2>/dev/null || true)"
+  if [ -n "$classified" ]; then
+    printf 'auth\n'
+    return 0
+  fi
+
+  if grep -qiF \
+    -e 'authentication failed' \
+    -e 'auth error' \
+    -e 'token expired' \
+    -e 'Invalid API key' \
+    -e 'Unauthorized' \
+    "$log_file" 2>/dev/null; then
+    printf 'auth\n'
+    return 0
+  fi
+
+  printf 'normal\n'
+}
+
+calculate_quota_backoff_delay() {
+  local consecutive="$1"
+  local delay="$quota_backoff_floor_secs"
+  local attempt=0
+
+  if [ "$consecutive" -le 0 ] || [ "$delay" -le 0 ]; then
+    printf '0\n'
+    return 0
+  fi
+
+  for ((attempt = 1; attempt < consecutive; attempt++)); do
+    if [ "$delay" -ge "$quota_backoff_max_secs" ]; then
+      delay="$quota_backoff_max_secs"
+      break
+    fi
+    delay=$((delay * 2))
+  done
+
+  if [ "$delay" -gt "$quota_backoff_max_secs" ]; then
+    delay="$quota_backoff_max_secs"
+  fi
+
+  if [ "$quota_backoff_jitter_pct" -gt 0 ] && [ "$delay" -gt 0 ]; then
+    local jitter=$((delay * quota_backoff_jitter_pct / 100))
+    if [ "$jitter" -gt 0 ]; then
+      local span=$((jitter * 2 + 1))
+      local offset=$((RANDOM % span - jitter))
+      delay=$((delay + offset))
+      if [ "$delay" -lt 1 ]; then
+        delay=1
+      fi
+    fi
+  fi
+
+  printf '%s\n' "$delay"
+}
+
+read_agent_backoff_until() {
+  local agent_id="$1"
+  local backoff_file=""
+  local backoff_until=""
+
+  backoff_file="$(agent_backoff_file "$agent_id")"
+  [ -f "$backoff_file" ] || {
+    printf '0\n'
+    return 0
+  }
+
+  backoff_until="$(awk -F= '/^backoff_until=/{print $2; exit}' "$backoff_file" 2>/dev/null || true)"
+  case "$backoff_until" in
+    ''|*[!0-9]*)
+      printf '0\n'
+      ;;
+    *)
+      printf '%s\n' "$backoff_until"
+      ;;
+  esac
+}
+
+read_agent_backoff_consecutive() {
+  local agent_id="$1"
+  local backoff_file=""
+  local consecutive=""
+
+  backoff_file="$(agent_backoff_file "$agent_id")"
+  [ -f "$backoff_file" ] || {
+    printf '0\n'
+    return 0
+  }
+
+  consecutive="$(awk -F= '/^consecutive=/{print $2; exit}' "$backoff_file" 2>/dev/null || true)"
+  case "$consecutive" in
+    ''|*[!0-9]*)
+      printf '0\n'
+      ;;
+    *)
+      printf '%s\n' "$consecutive"
+      ;;
+  esac
+}
+
+write_agent_backoff() {
+  local agent_id="$1"
+  local backoff_until="$2"
+  local consecutive="$3"
+  local backoff_file=""
+
+  backoff_file="$(agent_backoff_file "$agent_id")"
+  mkdir -p "$agent_backoff_root"
+  printf 'backoff_until=%s\nconsecutive=%s\n' "$backoff_until" "$consecutive" > "$backoff_file"
+  chmod 600 "$backoff_file" 2>/dev/null || true
+}
+
+clear_agent_backoff() {
+  local agent_id="$1"
+  rm -f "$(agent_backoff_file "$agent_id")" 2>/dev/null || true
 }
 
 append_env_if_set() {
