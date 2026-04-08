@@ -1,3 +1,7 @@
+x-agent-base-subscription-env: &agent-base-subscription-env
+  HIVEMOOT_CLI_UPDATE: ${HIVEMOOT_CLI_UPDATE:-skip}
+  GIT_CONFIG_GLOBAL: ${GIT_CONFIG_GLOBAL:-/tmp/.gitconfig}
+
 x-agent-base-subscription: &agent-base-subscription
   build:
     context: .
@@ -19,6 +23,13 @@ x-agent-base-subscription: &agent-base-subscription
         pids: ${AGENT_PIDS_LIMIT:-512}
   stdin_open: true
   tty: true
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  environment:
+    <<: *agent-base-subscription-env
   tmpfs:
     - /tmp:size=2g,mode=1777
   volumes:
@@ -41,6 +52,7 @@ services:
     env_file:
       - .env
     environment:
+      <<: *agent-base-subscription-env
       AGENT_AUTH_MODE: subscription
       TARGET_REPO: ${TARGET_REPO:-}
       WORKSPACE_ROOT: ${WORKSPACE_ROOT:-/workspace/repo}
