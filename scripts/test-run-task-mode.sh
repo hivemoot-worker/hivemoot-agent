@@ -307,7 +307,7 @@ run_task_claim_header_source_case() {
 
   reset_task_globals
   task_claim_url="https://api.example.com/api/tasks/claim"
-  export MOCK_CURL_BODY="$(
+  MOCK_CURL_BODY="$(
     jq -cn \
       --arg task_id "task-claim-direct" \
       --arg prompt "Inspect queue behavior" \
@@ -315,6 +315,7 @@ run_task_claim_header_source_case() {
       --arg claim_token "claim-token-direct" \
       '{task: {task_id: $task_id, prompt: $prompt, repos: [$repo]}, claim_token: $claim_token, messages: []}'
   )"
+  export MOCK_CURL_BODY
 
   if ! claim_next_task; then
     fail "expected claim_next_task to succeed"
