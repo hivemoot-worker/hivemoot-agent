@@ -98,8 +98,8 @@ for compose_file in docker-compose.yml docker-compose.subscription.local.yml; do
   assert_file_contains "$compose_file" "read_only: true"
   assert_file_contains "$compose_file" "- ALL"
   assert_file_contains "$compose_file" "- no-new-privileges:true"
-  assert_file_contains "$compose_file" 'HIVEMOOT_CLI_UPDATE: ${HIVEMOOT_CLI_UPDATE:-skip}'
-  assert_file_contains "$compose_file" 'GIT_CONFIG_GLOBAL: ${GIT_CONFIG_GLOBAL:-/tmp/.gitconfig}'
+  assert_file_contains "$compose_file" "HIVEMOOT_CLI_UPDATE: \${HIVEMOOT_CLI_UPDATE:-skip}"
+  assert_file_contains "$compose_file" "GIT_CONFIG_GLOBAL: \${GIT_CONFIG_GLOBAL:-/tmp/.gitconfig}"
 done
 
 # Symlink scenario: simulate read-only rootfs by pre-creating .claude.json
