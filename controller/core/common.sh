@@ -130,7 +130,7 @@ agent_backoff_file() {
 
 classify_periodic_failure() {
   local log_file="$1"
-  local classified=""
+  local classified_kind=""
 
   [ -s "$log_file" ] || {
     printf 'normal\n'
@@ -142,25 +142,22 @@ classify_periodic_failure() {
     -e 'quota exhausted' \
     -e 'billing_hard_limit_reached' \
     -e 'You have exhausted your capacity' \
-    -e '429 Too Many Requests' \
     -e 'rate_limit_exceeded' \
     "$log_file" 2>/dev/null; then
     printf 'quota\n'
     return 0
   fi
 
-  classified="$(classify_worker_log_failure "$log_file" 2>/dev/null || true)"
-  if [ -n "$classified" ]; then
+  classified_kind="$(classify_worker_log_failure_kind "$log_file" 2>/dev/null || true)"
+  if [ "$classified_kind" = "auth" ]; then
     printf 'auth\n'
     return 0
   fi
 
   if grep -qiF \
-    -e 'authentication failed' \
-    -e 'auth error' \
     -e 'token expired' \
     -e 'Invalid API key' \
-    -e 'Unauthorized' \
+    -e 'Incorrect API key' \
     "$log_file" 2>/dev/null; then
     printf 'auth\n'
     return 0
@@ -359,6 +356,10 @@ cleanup_job_home_credentials() {
 
 classify_worker_log_failure() {
   classify_run_failure_from_file "$1"
+}
+
+classify_worker_log_failure_kind() {
+  classify_run_failure_kind_from_file "$1"
 }
 
 file_mtime_epoch() {

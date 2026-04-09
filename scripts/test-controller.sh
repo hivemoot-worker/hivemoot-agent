@@ -3048,7 +3048,7 @@ run_quota_backoff_write_case() {
     HOME="${case_dir}/home" \
     MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
     MOCK_DOCKER_WAIT_EXIT="1" \
-    MOCK_DOCKER_LOG_CONTENT="429 Too Many Requests: quota exceeded" \
+    MOCK_DOCKER_LOG_CONTENT="TerminalQuotaError: quota exhausted" \
     TARGET_REPO="owner/repo" \
     CONTROLLER_RUN_MODE="once" \
     CONTROLLER_MAX_WORKERS="1" \
@@ -3113,6 +3113,140 @@ run_auth_backoff_write_case() {
   assert_exists "$backoff_file"
   assert_file_contains "$controller_log" "class=auth"
   echo "PASS: auth failure writes periodic backoff state"
+}
+
+run_non_provider_429_does_not_backoff_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_log="${case_dir}/controller.log"
+  local backoff_file="${case_dir}/workspace/agent-backoff/worker"
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_EXIT="1" \
+    MOCK_DOCKER_LOG_CONTENT="GitHub API returned 429 Too Many Requests" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="1" \
+    PERIODIC_JITTER_SECS="0" \
+    QUOTA_BACKOFF_FLOOR_SECS="300" \
+    QUOTA_BACKOFF_MAX_SECS="3600" \
+    QUOTA_BACKOFF_JITTER_PCT="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1 || true
+
+  assert_not_exists "$backoff_file"
+  assert_file_not_contains "$controller_log" "Job backoff: agent=worker"
+  echo "PASS: non-provider 429 does not trigger periodic backoff"
+}
+
+run_backoff_reset_after_normal_failure_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local workspace="${case_dir}/workspace"
+  local backoff_file="${workspace}/agent-backoff/worker"
+  local quota_log="${case_dir}/controller-quota.log"
+  local normal_log="${case_dir}/controller-normal.log"
+  local auth_log="${case_dir}/controller-auth.log"
+  local consecutive=""
+  local expired_epoch=0
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_EXIT="1" \
+    MOCK_DOCKER_LOG_CONTENT="TerminalQuotaError: quota exhausted" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="$workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="1" \
+    PERIODIC_JITTER_SECS="0" \
+    QUOTA_BACKOFF_FLOOR_SECS="300" \
+    QUOTA_BACKOFF_MAX_SECS="3600" \
+    QUOTA_BACKOFF_JITTER_PCT="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$quota_log" 2>&1 || true
+
+  assert_exists "$backoff_file"
+  expired_epoch=$(( $(date +%s) - 1 ))
+  printf 'backoff_until=%s\nconsecutive=1\n' "$expired_epoch" > "$backoff_file"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_EXIT="1" \
+    MOCK_DOCKER_LOG_CONTENT="GitHub integration: failed to clone owner/repo." \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="$workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="1" \
+    PERIODIC_JITTER_SECS="0" \
+    QUOTA_BACKOFF_FLOOR_SECS="300" \
+    QUOTA_BACKOFF_MAX_SECS="3600" \
+    QUOTA_BACKOFF_JITTER_PCT="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$normal_log" 2>&1 || true
+
+  assert_not_exists "$backoff_file"
+  assert_file_not_contains "$normal_log" "Job backoff: agent=worker"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_EXIT="1" \
+    MOCK_DOCKER_LOG_CONTENT="Invalid API key" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="$workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="1" \
+    PERIODIC_JITTER_SECS="0" \
+    QUOTA_BACKOFF_FLOOR_SECS="300" \
+    QUOTA_BACKOFF_MAX_SECS="3600" \
+    QUOTA_BACKOFF_JITTER_PCT="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$auth_log" 2>&1 || true
+
+  assert_exists "$backoff_file"
+  consecutive="$(awk -F= '/^consecutive=/{print $2; exit}' "$backoff_file")"
+  assert_eq "1" "$consecutive" "auth failure after normal failure should restart backoff count"
+  assert_file_contains "$auth_log" "Job backoff: agent=worker class=auth consecutive=1"
+  echo "PASS: normal periodic failure clears stale backoff state before next auth failure"
 }
 
 run_quota_backoff_deferral_case() {
@@ -3526,6 +3660,8 @@ run_messaging_duplicate_agent_ack_case() {
 
 run_quota_backoff_write_case "$repo_root" "${tmpdir}/quota-backoff-write"
 run_auth_backoff_write_case "$repo_root" "${tmpdir}/auth-backoff-write"
+run_non_provider_429_does_not_backoff_case "$repo_root" "${tmpdir}/non-provider-429-no-backoff"
+run_backoff_reset_after_normal_failure_case "$repo_root" "${tmpdir}/backoff-reset-after-normal-failure"
 run_quota_backoff_deferral_case "$repo_root" "${tmpdir}/quota-backoff-deferral"
 run_quota_backoff_shutdown_cancelled_case "$repo_root" "${tmpdir}/quota-backoff-shutdown-cancelled"
 run_task_oom_failure_case "$repo_root" "${tmpdir}/task-oom-failure"

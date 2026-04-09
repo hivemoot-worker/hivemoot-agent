@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for scripts/lib-classify.sh — classify_run_failure_from_file()
+# Tests for scripts/lib-classify.sh classification helpers.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -33,10 +33,14 @@ echo "Running lib-classify.sh tests"
 
 assert_eq "" "$(classify_run_failure_from_file "${tmp}/nonexistent")" \
   "nonexistent file → empty"
+assert_eq "" "$(classify_run_failure_kind_from_file "${tmp}/nonexistent")" \
+  "nonexistent file kind → empty"
 
 touch "${tmp}/empty"
 assert_eq "" "$(classify_run_failure_from_file "${tmp}/empty")" \
   "empty file → empty"
+assert_eq "" "$(classify_run_failure_kind_from_file "${tmp}/empty")" \
+  "empty file kind → empty"
 
 # --- Kilo provider patterns (checked before standalone provider patterns) ---
 
@@ -82,6 +86,10 @@ assert_eq \
   "GitHub token is missing" \
   "$(classify_run_failure_from_file "${tmp}/gh-missing")" \
   "Missing GitHub token"
+assert_eq \
+  "auth" \
+  "$(classify_run_failure_kind_from_file "${tmp}/gh-missing")" \
+  "Missing GitHub token kind"
 
 printf 'GitHub integration: missing token. Set AGENT_GITHUB_TOKEN_FILE or AGENT_GITHUB_TOKEN.\n' > "${tmp}/gh-missing-integration"
 assert_eq \
@@ -120,6 +128,10 @@ assert_eq \
   "Failed to clone repository — check token and repo access" \
   "$(classify_run_failure_from_file "${tmp}/clone-fail")" \
   "Failed to clone"
+assert_eq \
+  "clone" \
+  "$(classify_run_failure_kind_from_file "${tmp}/clone-fail")" \
+  "Failed to clone kind"
 
 printf 'GitHub integration: failed to clone owner/repo.\n' > "${tmp}/clone-fail-integration"
 assert_eq \
@@ -168,6 +180,10 @@ assert_eq \
   "Failed to configure git credentials" \
   "$(classify_run_failure_from_file "${tmp}/git-cred")" \
   "git credential helper"
+assert_eq \
+  "git_setup" \
+  "$(classify_run_failure_kind_from_file "${tmp}/git-cred")" \
+  "git credential helper kind"
 
 printf 'GitHub integration: gh auth setup-git failed.\n' > "${tmp}/git-cred-integration"
 assert_eq \
@@ -181,6 +197,9 @@ printf 'Some completely unknown failure\n' > "${tmp}/unknown"
 assert_eq "" \
   "$(classify_run_failure_from_file "${tmp}/unknown")" \
   "unknown error → empty"
+assert_eq "" \
+  "$(classify_run_failure_kind_from_file "${tmp}/unknown")" \
+  "unknown error kind → empty"
 
 # --- Kilo pattern takes priority over standalone provider pattern ---
 # A file that contains both "when KILO_PROVIDER=anthropic" and "ANTHROPIC_API_KEY

@@ -339,6 +339,9 @@ record_job_completion() {
         write_agent_backoff "$agent_id" "$backoff_until" "$new_consecutive"
         log "Job backoff: agent=${agent_id} class=${failure_class} consecutive=${new_consecutive} delay=${backoff_delay}s"
         ;;
+      *)
+        clear_agent_backoff "$agent_id"
+        ;;
     esac
   fi
   log "Job failed: id=${job_id} repo=${repo} agent=${agent_id} exit=${exit_code}"
@@ -617,6 +620,7 @@ launch_job() {
       finalize_processing_file "$processing_file" "done"
       return 0
     fi
+    clear_agent_backoff "$agent_id"
   fi
 
   if ! wait_for_available_slot; then
