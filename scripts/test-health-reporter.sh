@@ -324,7 +324,37 @@ test_extract_error_detail_strips_ansi() {
   local result
   result="$(_extract_error_detail_from_log "$log_file")"
   [ "$result" = "Error: something failed" ] || fail "expected ANSI-stripped output, got '${result}'"
-  pass "strips ANSI escape sequences from log"
+  pass "strips ANSI CSI escape sequences from log"
+}
+
+test_extract_error_detail_strips_osc_bel() {
+  source_reporter
+  local log_file="${TEST_TMP}/test-osc-bel.txt"
+  printf $'\x1b]8;;https://example.com\x07link text\x1b]8;;\x07\n' > "$log_file"
+  local result
+  result="$(_extract_error_detail_from_log "$log_file")"
+  [ "$result" = "link text" ] || fail "expected OSC+BEL stripped to 'link text', got '${result}'"
+  pass "strips OSC sequences terminated with BEL"
+}
+
+test_extract_error_detail_strips_osc_st() {
+  source_reporter
+  local log_file="${TEST_TMP}/test-osc-st.txt"
+  printf $'\x1b]8;;https://example.com\x1b\\link text\x1b]8;;\x1b\\\n' > "$log_file"
+  local result
+  result="$(_extract_error_detail_from_log "$log_file")"
+  [ "$result" = "link text" ] || fail "expected OSC+ST stripped to 'link text', got '${result}'"
+  pass "strips OSC sequences terminated with ST"
+}
+
+test_extract_error_detail_strips_nonprintable() {
+  source_reporter
+  local log_file="${TEST_TMP}/test-nonprint.txt"
+  printf 'before\x00\x01\x02after\n' > "$log_file"
+  local result
+  result="$(_extract_error_detail_from_log "$log_file")"
+  [ "$result" = "beforeafter" ] || fail "expected non-printable chars stripped, got '${result}'"
+  pass "strips residual non-printable characters"
 }
 
 test_extract_error_detail_caps_at_2048() {
@@ -1262,6 +1292,9 @@ run_test test_payload_omits_empty_error_detail
 run_test test_extract_error_detail_from_log
 run_test test_extract_error_detail_tail_20
 run_test test_extract_error_detail_strips_ansi
+run_test test_extract_error_detail_strips_osc_bel
+run_test test_extract_error_detail_strips_osc_st
+run_test test_extract_error_detail_strips_nonprintable
 run_test test_extract_error_detail_caps_at_2048
 run_test test_extract_error_detail_missing_file
 run_test test_validates_error_detail_passes

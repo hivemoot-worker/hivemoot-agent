@@ -45,7 +45,12 @@ _extract_error_detail_from_log() {
   raw="$(tail -n 20 "$log_file" 2>/dev/null)" || return 1
   [ -n "$raw" ] || return 1
   local stripped
-  stripped="$(printf '%s' "$raw" | sed -e $'s/\x1b\\[[0-9;]*[a-zA-Z]//g' -e $'s/\x1b\\].*?\x07//g' -e 's/\x1b[^[]*//g')" || return 1
+  stripped="$(printf '%s' "$raw" \
+    | sed -e $'s/\x1b\\[[0-9;]*[a-zA-Z]//g' \
+          -e $'s/\x1b\\][^\x07]*\x07//g' \
+          -e $'s/\x1b\\][^\x1b]*\x1b\\\\//g' \
+          -e 's/\x1b[^[]*//g' \
+    | tr -cd '[:print:]\n')" || return 1
   if [ ${#stripped} -gt 2048 ]; then
     stripped="${stripped:0:2048}"
   fi
