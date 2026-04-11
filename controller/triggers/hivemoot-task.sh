@@ -121,7 +121,7 @@ extract_task_result_markdown() {
 
   case "$provider_name" in
     codex)  extract_codex_result_markdown "$log_path" ;;
-    gemini) extract_text_result_from_log "$log_path" ;;
+    gemini|kilo|opencode) extract_text_result_from_log "$log_path" ;;
     claude) extract_claude_result_markdown "$log_path" ;;
     *)      extract_text_result_from_log "$log_path" ;;
   esac
@@ -455,7 +455,8 @@ handle_task_job_result() {
       complete_payload="$task_result_markdown"
     elif [ "$provider_name" = "codex" ]; then
       complete_payload="Task completed, but no agent markdown result could be extracted from Codex JSON logs. See local debug details in task-output/${task_id}/result.md."
-    elif [ "$provider_name" = "gemini" ] || [ "$provider_name" = "claude" ]; then
+    elif [ "$provider_name" = "gemini" ] || [ "$provider_name" = "claude" ] \
+      || [ "$provider_name" = "kilo" ] || [ "$provider_name" = "opencode" ]; then
       complete_payload="Task completed, but no output was captured from ${provider_name}. See local debug details in task-output/${task_id}/result.md."
     fi
   fi
@@ -475,7 +476,10 @@ handle_task_job_result() {
     if [ "$exit_code" -eq 0 ] && [ -z "$task_result_markdown" ] && [ "$provider_name" = "codex" ]; then
       echo
       echo "Execution finished, but the markdown result could not be extracted from Codex logs."
-    elif [ "$exit_code" -eq 0 ] && [ -z "$task_result_markdown" ] && { [ "$provider_name" = "gemini" ] || [ "$provider_name" = "claude" ]; }; then
+    elif [ "$exit_code" -eq 0 ] && [ -z "$task_result_markdown" ] && {
+      [ "$provider_name" = "gemini" ] || [ "$provider_name" = "claude" ] \
+        || [ "$provider_name" = "kilo" ] || [ "$provider_name" = "opencode" ];
+    }; then
       echo
       echo "Execution finished, but no output was captured from ${provider_name}."
     elif [ "$exit_code" -eq 0 ]; then
