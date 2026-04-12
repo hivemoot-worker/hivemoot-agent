@@ -1,5 +1,7 @@
 """Tests for Engine.oneshot() and supporting functions."""
 
+from contextlib import redirect_stdout
+import io
 import json
 import os
 import sys
@@ -88,12 +90,45 @@ def test_oneshot_happy_path():
     mock_result.returncode = 0
     mock_result.stdout = '{"type":"result","result":"Agent says hello"}\n'
     mock_result.stderr = ""
+    stdout = io.StringIO()
 
     with patch("subprocess.run", return_value=mock_result):
         with patch.dict(os.environ, {"AGENT_PROVIDER": "claude"}, clear=False):
-            engine = Engine()
-            code = engine.oneshot(prompt="Say hello")
+            with redirect_stdout(stdout):
+                engine = Engine()
+                code = engine.oneshot(prompt="Say hello")
             assert code == 0
+    assert stdout.getvalue() == "Agent says hello\n"
+
+
+def test_oneshot_uses_prompt_file(tmp_path):
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("Review open PRs\n")
+
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = '{"type":"result","result":"done"}\n'
+    mock_result.stderr = ""
+    stdout = io.StringIO()
+
+    with patch("subprocess.run", return_value=mock_result) as run_mock:
+        with patch.dict(
+            os.environ,
+            {
+                "AGENT_PROVIDER": "claude",
+                "AGENT_EXTRA_PROMPT_FILE": str(prompt_file),
+            },
+            clear=False,
+        ):
+            with redirect_stdout(stdout):
+                engine = Engine()
+                code = engine.oneshot()
+
+    assert code == 0
+    assert stdout.getvalue() == "done\n"
+    assert run_mock.call_args is not None
+    cmd = run_mock.call_args.args[0]
+    assert cmd[-1] == "Review open PRs"
 
 
 def test_oneshot_timeout():
