@@ -239,6 +239,7 @@ stop_controller_workers() {
 
 stop_job_subshells() {
   local pid=""
+  local job_exit=0
 
   if [ "${#running_pids[@]}" -gt 0 ]; then
     log "Stopping ${#running_pids[@]} tracked job subshell(s)"
@@ -249,7 +250,12 @@ stop_job_subshells() {
   done
 
   for pid in "${running_pids[@]}"; do
-    wait "$pid" 2>/dev/null || true
+    if wait "$pid" 2>/dev/null; then
+      job_exit=0
+    else
+      job_exit=$?
+    fi
+    record_job_completion "$pid" "$job_exit"
   done
 
   running_pids=()
