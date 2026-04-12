@@ -96,6 +96,36 @@ def test_oneshot_happy_path():
             assert code == 0
 
 
+def test_oneshot_prompt_from_file(tmp_path):
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("Review open PRs\n")
+
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = ""
+    mock_result.stderr = ""
+
+    with patch.object(
+        Engine,
+        "_build_agent_cmd",
+        return_value=["codex", "run"],
+    ) as build_cmd:
+        with patch("subprocess.run", return_value=mock_result):
+            with patch.dict(
+                os.environ,
+                {
+                    "AGENT_PROVIDER": "claude",
+                    "AGENT_EXTRA_PROMPT_FILE": str(prompt_file),
+                },
+                clear=True,
+            ):
+                engine = Engine()
+                code = engine.oneshot()
+
+    assert code == 0
+    assert build_cmd.call_args.args[2] == "Review open PRs"
+
+
 def test_oneshot_timeout():
     with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 30)):
         with patch.dict(os.environ, {"AGENT_PROVIDER": "claude"}, clear=False):
